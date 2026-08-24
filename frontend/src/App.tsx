@@ -27,7 +27,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [financialData, setFinancialData] = useState<DashboardData>();
   const current = chart[selected];
   const max = Math.max(...chart.flatMap(item => [item.expenses, item.income]));
-  const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+  const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
   const apiFetch = (path: string, init?: RequestInit) => fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
 
   async function loadDashboard() {

@@ -110,6 +110,10 @@ app.get('/api/dashboard', async (request, response) => {
   response.json({ balance: income - expenses, income, expenses, transactions });
 });
 
-app.listen(port, () => {
-  console.log(`Fycash API running at http://localhost:${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Fycash API running at http://localhost:${port}`);
+  });
+}
+
+export default app;

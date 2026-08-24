@@ -19,6 +19,7 @@ interface Transaction {
   invoice: 'Receita' | 'Paga';
   amount: number;
   kind: TransactionKind;
+  accountId?: string;
 }
 
 const app = express();
@@ -126,13 +127,19 @@ app.get('/api/transactions', async (request, response) => {
 });
 
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {
-  const { member, date, description, status, category, account, invoice, amount, kind } = request.body;
+  const { member, date, description, status, category, account, accountId, invoice, amount, kind } = request.body;
   if (!member || !date || !description || !status || !category || !account || !invoice || typeof amount !== 'number' || !Number.isFinite(amount) || (kind !== 'income' && kind !== 'expense')) {
     response.status(400).json({ error: 'Dados da transação são inválidos.' });
     return;
   }
 
-  const { data, error } = await supabase.from('transactions').insert({ profile_id: appProfileId(request), member, date, description, status, category, account, invoice, amount, kind }).select().single();
+  const profileId = appProfileId(request);
+  if (accountId) {
+    const { data: ownedAccount, error: accountError } = await supabase.from('accounts').select('id').eq('id', accountId).eq('profile_id', profileId).maybeSingle();
+    if (accountError) return response.status(500).json({ error: accountError.message });
+    if (!ownedAccount) return response.status(400).json({ error: 'A conta selecionada não pertence ao usuário.' });
+  }
+  const { data, error } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId ?? null, member, date, description, status, category, account, invoice, amount, kind }).select().single();
   if (error) return response.status(500).json({ error: error.message });
   response.status(201).json(data);
 });

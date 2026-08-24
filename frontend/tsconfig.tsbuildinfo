@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/login.tsx","./src/secureapp.tsx","./src/main.tsx","./src/supabase.ts","./src/vite-env.d.ts","./src/types/pluggy-connect-sdk.d.ts"],"version":"5.9.3"}

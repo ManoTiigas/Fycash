@@ -10,6 +10,7 @@ type BankCard = { id: string; name: string; brand: string | null; last_four: str
 type BankConnection = { id: string; status: string; institution_name: string | null; last_successful_sync_at: string | null; last_error: string | null };
 type DashboardData = { balance: number; income: number; expenses: number; transactions: ApiTransaction[]; accounts: Account[]; categories: DashboardCategory[]; chart: DashboardChart[]; cards: BankCard[]; connections: BankConnection[] };
 type NewTransaction = { description: string; amount: number; date: string; category: string; kind: 'income' | 'expense'; accountId?: string; account: string };
+type NewAccount = { name: string; type: Account['type']; balance: number };
 
 const money = (amount: number) => `R$ ${Number(amount).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const monthLabel = (month: string) => new Date(`${month}-01T12:00:00`).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
@@ -49,6 +50,36 @@ function TransactionModal({ accounts, onClose, onSave }: { accounts: Account[]; 
   return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Nova transação</h2><p>Registre um lançamento manual.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><div className="kind-toggle"><button type="button" className={kind === 'expense' ? 'active expense' : ''} onClick={() => setKind('expense')}>Despesa</button><button type="button" className={kind === 'income' ? 'active income' : ''} onClick={() => setKind('income')}>Receita</button></div><label>Descrição<input name="description" placeholder="Ex.: Mercado" required autoFocus /></label><div className="modal-grid"><label>Valor<input name="amount" type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0,00" required /></label><label>Data<input name="date" type="date" defaultValue={today} required /></label></div><div className="modal-grid"><label>Categoria<input name="category" placeholder="Ex.: Alimentação" required /></label><label>Conta<select name="accountId" defaultValue=""><option value="">Transação manual</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label></div>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit"><Plus />{saving ? 'Salvando...' : 'Adicionar transação'}</button></form></div>;
 }
 
+const accountPresets: Array<{ name: string; type: Account['type']; description: string }> = [
+  { name: 'Conta corrente', type: 'checking', description: 'Banco e Pix' },
+  { name: 'Poupança', type: 'savings', description: 'Reserva financeira' },
+  { name: 'Carteira', type: 'cash', description: 'Dinheiro em espécie' },
+  { name: 'Investimentos', type: 'investment', description: 'Aplicações e corretora' },
+  { name: 'Cartão de crédito', type: 'credit', description: 'Limite e fatura' }
+];
+
+function AccountModal({ onClose, onSave }: { onClose: () => void; onSave: (account: NewAccount) => Promise<void> }) {
+  const [tab, setTab] = useState<'preset' | 'custom'>('preset');
+  const [selectedPreset, setSelectedPreset] = useState(accountPresets[0]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = tab === 'preset' ? selectedPreset.name : String(form.get('name') ?? '').trim();
+    const type = tab === 'preset' ? selectedPreset.type : String(form.get('type') ?? 'checking') as Account['type'];
+    const balance = Number(String(form.get('balance') ?? '0').replace(',', '.'));
+    if (!name || !Number.isFinite(balance)) return setError('Informe um nome e saldo válidos.');
+    setSaving(true); setError('');
+    try { await onSave({ name, type, balance }); onClose(); }
+    catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Não foi possível criar a conta.'); }
+    finally { setSaving(false); }
+  }
+
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal account-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Adicionar conta</h2><p>Escolha um modelo ou crie do seu jeito.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><div className="account-tabs"><button type="button" className={tab === 'preset' ? 'active' : ''} onClick={() => setTab('preset')}>Modelos rápidos</button><button type="button" className={tab === 'custom' ? 'active' : ''} onClick={() => setTab('custom')}>Personalizada</button></div>{tab === 'preset' ? <div className="preset-list">{accountPresets.map(preset => <button type="button" className={selectedPreset.type === preset.type ? 'preset active' : 'preset'} onClick={() => setSelectedPreset(preset)} key={preset.type}><strong>{preset.name}</strong><small>{preset.description}</small></button>)}</div> : <><label>Nome da conta<input name="name" placeholder="Ex.: Conta viagem" required /></label><label>Tipo<select name="type" defaultValue="checking">{accountPresets.map(preset => <option key={preset.type} value={preset.type}>{preset.name}</option>)}</select></label></>}<label>Saldo inicial<input name="balance" type="number" step="0.01" inputMode="decimal" defaultValue="0" required /></label>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit"><Plus />{saving ? 'Salvando...' : 'Adicionar conta'}</button></form></div>;
+}
+
 export default function App({ accessToken, onSignOut }: { accessToken: string; onSignOut: () => void }) {
   const [selected, setSelected] = useState(0);
   const [connectToken, setConnectToken] = useState<string>();
@@ -57,6 +88,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [statementSearch, setStatementSearch] = useState('');
   const [statementKind, setStatementKind] = useState<'all' | 'income' | 'expense'>('all');
   const [newTransactionOpen, setNewTransactionOpen] = useState(false);
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
   const apiFetch = (path: string, init?: RequestInit) => fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
   const chartData = financialData?.chart ?? [];
@@ -102,6 +134,13 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     await loadDashboard();
   }
 
+  async function createAccount(account: NewAccount) {
+    const response = await apiFetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(account) });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível criar a conta.');
+    await loadDashboard();
+  }
+
   const transactions = financialData?.transactions ?? [];
   const filteredRows = transactions.filter(transaction => (statementKind === 'all' || transaction.kind === statementKind) && [transaction.member, transaction.description, transaction.category, transaction.account].join(' ').toLocaleLowerCase().includes(statementSearch.toLocaleLowerCase()));
   const exportCsv = () => {
@@ -114,8 +153,9 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     {connectionStatus && <p className="connection-status" role="status">{connectionStatus}</p>}
     {connectToken && <PluggyConnect connectToken={connectToken} includeSandbox={import.meta.env.VITE_PLUGGY_SANDBOX === 'true'} onSuccess={syncConnectedItem} onClose={() => setConnectToken(undefined)} onLoadError={error => setConnectionStatus(error.message)} />}
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}
+    {accountManagerOpen && <AccountModal onClose={() => setAccountManagerOpen(false)} onSave={createAccount} />}
 
-    <section className="overview"><div><section className="account-carousel" aria-label="Contas sincronizadas">{financialData?.accounts?.length ? financialData.accounts.map(account => <article className="account-card" key={account.id}><span>{account.type === 'credit' ? 'CR' : 'CC'}</span><p>{account.name}</p><strong>{money(account.balance)}</strong><small>{account.last_synced_at ? `Atualizado ${new Date(account.last_synced_at).toLocaleDateString('pt-BR')}` : 'Aguardando sincronização'}</small></article>) : <article className="account-card empty"><CreditCard /><p>Conecte uma instituição</p><small>Suas contas Open Finance aparecerão aqui.</small></article>}</section><section className="summary-grid"><article className="summary balance"><p>Saldo Total</p><strong>{money(financialData?.balance ?? 0)}</strong><small><TrendUp /> {financialData?.connections?.length ? `${financialData.connections.length} banco(s) conectado(s)` : 'Conecte seu banco'}</small></article><article className="summary"><p>Receitas <i><ArrowDownLeft /></i></p><strong>{money(financialData?.income ?? 0)}</strong><small><TrendUp /> Movimentações sincronizadas</small></article><article className="summary"><p>Despesas <i className="danger"><ArrowUpRight /></i></p><strong>{money(financialData?.expenses ?? 0)}</strong><small><TrendDown /> Movimentações sincronizadas</small></article></section></div><aside className="cards-panel"><h2><CreditCard /> Cartões</h2><div className="card-stack">{financialData?.cards?.length ? financialData.cards.map(card => <article className="inter" key={card.id}><span>{card.brand?.slice(0, 2).toUpperCase() ?? 'CC'}</span><b>{money(card.available_limit)}</b><small>{card.name}{card.last_four ? ` • ${card.last_four}` : ''}</small><strong>{money(card.credit_limit)}</strong></article>) : <p className="empty-copy">Nenhum cartão de crédito sincronizado.</p>}</div></aside></section>
+    <section className="overview"><div><section className="account-carousel" aria-label="Contas sincronizadas">{financialData?.accounts?.map(account => <article className="account-card" key={account.id}><span>{account.type === 'credit' ? 'CR' : 'CC'}</span><p>{account.name}</p><strong>{money(account.balance)}</strong><small>{account.last_synced_at ? `Atualizado ${new Date(account.last_synced_at).toLocaleDateString('pt-BR')}` : 'Conta personalizada'}</small></article>)}<button type="button" className="account-card add-account" onClick={() => setAccountManagerOpen(true)}><Plus /><strong>Adicionar conta</strong><small>Modelo rápido ou personalizada</small></button></section><section className="summary-grid"><article className="summary balance"><p>Saldo Total</p><strong>{money(financialData?.balance ?? 0)}</strong><small><TrendUp /> {financialData?.connections?.length ? `${financialData.connections.length} banco(s) conectado(s)` : 'Conecte seu banco'}</small></article><article className="summary"><p>Receitas <i><ArrowDownLeft /></i></p><strong>{money(financialData?.income ?? 0)}</strong><small><TrendUp /> Movimentações sincronizadas</small></article><article className="summary"><p>Despesas <i className="danger"><ArrowUpRight /></i></p><strong>{money(financialData?.expenses ?? 0)}</strong><small><TrendDown /> Movimentações sincronizadas</small></article></section></div><aside className="cards-panel"><h2><CreditCard /> Cartões</h2><div className="card-stack">{financialData?.cards?.length ? financialData.cards.map(card => <article className="inter" key={card.id}><span>{card.brand?.slice(0, 2).toUpperCase() ?? 'CC'}</span><b>{money(card.available_limit)}</b><small>{card.name}{card.last_four ? ` • ${card.last_four}` : ''}</small><strong>{money(card.credit_limit)}</strong></article>) : <p className="empty-copy">Nenhum cartão de crédito sincronizado.</p>}</div></aside></section>
 
     <section className="content-grid"><article className="finance-chart"><div className="section-title"><h2><ChartLineUp /> Fluxo Financeiro</h2><div className="legend"><span><i />Receitas</span><span><i />Despesas</span></div></div><p className="chart-value">{current ? <>{monthLabel(current.month)}: <b>{money(current.income)}</b> receitas · <b>{money(current.expenses)}</b> despesas</> : 'Conecte seu banco ou registre uma transação para visualizar o fluxo.'}</p><div className="bar-chart">{chartData.length ? <><div className="axis"><span>{money(max)}</span><span>{money(max / 2)}</span><span>R$ 0</span></div><div className="bars">{chartData.map((item, index) => <button className={`bar-group ${selected === index ? 'selected' : ''}`} onClick={() => setSelected(index)} key={item.month} aria-label={`Selecionar ${monthLabel(item.month)}`}><span className="bar-pair"><i className="expense" style={{ height: `${item.expenses / max * 100}%` }} /><i className="income" style={{ height: `${item.income / max * 100}%` }} /></span><b>{monthLabel(item.month)}</b></button>)}</div></> : <p className="chart-empty">Sem dados financeiros no período.</p>}</div></article><aside className="right-rail"><Calendar /><div className="empty-card" /></aside></section>
 

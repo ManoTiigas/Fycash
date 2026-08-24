@@ -7,7 +7,7 @@ type Account = { id: string; name: string; type: string; balance: number; curren
 type DashboardCategory = { name: string; amount: number; percent: number };
 type DashboardChart = { month: string; income: number; expenses: number };
 type BankCard = { id: string; name: string; brand: string | null; last_four: string | null; credit_limit: number; available_limit: number };
-type BankConnection = { id: string; status: string; institution_name: string | null; last_successful_sync_at: string | null; last_error: string | null };
+type BankConnection = { id: string; status: string; institution_name: string | null; institution_logo_url: string | null; last_successful_sync_at: string | null; last_error: string | null };
 type DashboardData = { balance: number; income: number; expenses: number; transactions: ApiTransaction[]; accounts: Account[]; categories: DashboardCategory[]; chart: DashboardChart[]; cards: BankCard[]; connections: BankConnection[] };
 type NewTransaction = { description: string; amount: number; date: string; category: string; kind: 'income' | 'expense'; accountId?: string; account: string };
 
@@ -62,6 +62,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const chartData = financialData?.chart ?? [];
   const current = chartData[Math.min(selected, Math.max(chartData.length - 1, 0))];
   const max = Math.max(1, ...chartData.flatMap(item => [item.expenses, item.income]));
+  const connectedBanks = (financialData?.connections ?? []).filter(connection => connection.status === 'SYNCED');
 
   async function loadDashboard() {
     const response = await apiFetch('/api/dashboard');
@@ -110,7 +111,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   };
 
   return <main className="dashboard">
-    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members"><span>m</span><span>x</span><span>s</span><button><Plus /></button></div><button className="connect-bank" onClick={connectBank}><CreditCard /> Conectar banco</button><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }} aria-label="Sair" title="Sair">TC</button></header>
+    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members" aria-label="Bancos conectados">{connectedBanks.slice(0, 3).map(bank => <span className="bank-avatar" key={bank.id} title={bank.institution_name ?? 'Banco conectado'}>{bank.institution_logo_url ? <img src={bank.institution_logo_url} alt="" /> : (bank.institution_name ?? 'B').slice(0, 2).toUpperCase()}</span>)}<button onClick={connectBank} aria-label="Conectar banco com Open Finance" title="Conectar banco"><Plus /></button></div><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }} aria-label="Sair" title="Sair">TC</button></header>
     {connectionStatus && <p className="connection-status" role="status">{connectionStatus}</p>}
     {connectToken && <PluggyConnect connectToken={connectToken} includeSandbox={import.meta.env.VITE_PLUGGY_SANDBOX === 'true'} onSuccess={syncConnectedItem} onClose={() => setConnectToken(undefined)} onLoadError={error => setConnectionStatus(error.message)} />}
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}

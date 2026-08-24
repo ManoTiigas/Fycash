@@ -22,11 +22,6 @@ interface Transaction {
   accountId?: string;
 }
 
-interface AccountInput {
-  name: string;
-  type: 'checking' | 'savings' | 'cash' | 'investment' | 'credit';
-  balance?: number;
-}
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -130,14 +125,6 @@ app.get('/api/transactions', async (request, response) => {
   const { data, error } = await query;
   if (error) return response.status(500).json({ error: error.message });
   response.json(data);
-});
-
-app.post('/api/accounts', async (request: Request<object, AccountInput, Partial<AccountInput>>, response: Response) => {
-  const { name, type, balance = 0 } = request.body;
-  if (!name?.trim() || !['checking', 'savings', 'cash', 'investment', 'credit'].includes(type ?? '') || typeof balance !== 'number' || !Number.isFinite(balance)) return response.status(400).json({ error: 'Dados da conta são inválidos.' });
-  const { data, error } = await supabase.from('accounts').insert({ profile_id: appProfileId(request), name: name.trim(), type, balance, currency_code: 'BRL' }).select('id, name, type, balance, currency_code, last_synced_at').single();
-  if (error) return response.status(500).json({ error: error.message });
-  response.status(201).json(data);
 });
 
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {

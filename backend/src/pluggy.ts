@@ -3,8 +3,10 @@ import { supabase } from './supabase.js';
 const baseUrl = 'https://api.pluggy.ai';
 let cachedApiKey: { value: string; expiresAt: number } | undefined;
 
-type PluggyAccount = { id: string; name?: string; marketingName?: string; type?: string; balance?: number; currencyCode?: string };
+type PluggyAccount = { id: string; name?: string; marketingName?: string; type?: string; balance?: number; currencyCode?: string; creditData?: { creditLimit?: number; availableCreditLimit?: number; brand?: string; number?: string } };
 type PluggyTransaction = { id: string; date: string; description?: string; amount: number; type?: string; category?: string | { name?: string } };
+type PluggyItem = { id: string; clientUserId?: string; connector?: { name?: string; imageUrl?: string } };
+type SyncTrigger = 'connect' | 'manual' | 'webhook';
 
 function config() {
   const clientId = process.env.PLUGGY_CLIENT_ID;
@@ -25,10 +27,7 @@ async function apiKey() {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path.startsWith('http') ? path : `${baseUrl}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': await apiKey(), ...init?.headers }
-  });
+  const response = await fetch(path.startsWith('http') ? path : `${baseUrl}${path}`, { ...init, headers: { 'Content-Type': 'application/json', 'X-API-KEY': await apiKey(), ...init?.headers } });
   if (!response.ok) throw new Error(`Falha na API Pluggy (${response.status}).`);
   return response.json() as Promise<T>;
 }
@@ -37,16 +36,13 @@ export async function createConnectToken(profileId: string) {
   const webhookUrl = process.env.PLUGGY_WEBHOOK_URL;
   const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
   const safeWebhookUrl = webhookUrl && webhookSecret ? `${webhookUrl}${webhookUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(webhookSecret)}` : undefined;
-  const data = await request<{ accessToken?: string }>('/connect_token', {
-    method: 'POST',
-    body: JSON.stringify({ options: { clientUserId: profileId, avoidDuplicates: true, ...(safeWebhookUrl ? { webhookUrl: safeWebhookUrl } : {}) } })
-  });
+  const data = await request<{ accessToken?: string }>('/connect_token', { method: 'POST', body: JSON.stringify({ options: { clientUserId: profileId, avoidDuplicates: true, ...(safeWebhookUrl ? { webhookUrl: safeWebhookUrl } : {}) } }) });
   if (!data.accessToken) throw new Error('A Pluggy não retornou o token do Connect.');
   return data.accessToken;
 }
 
-const accountType = (type?: string) => type?.toLowerCase() === 'credit' ? 'credit' : type?.toLowerCase() === 'savings' ? 'savings' : 'checking';
-const transactionKind = (transaction: PluggyTransaction) => transaction.type?.toUpperCase() === 'CREDIT' || transaction.amount > 0 ? 'income' : 'expense';
+const accountType = (type?: string) => type?.toLowerCase() === 'credit' ? 'credit' : type?.toLowerCase() === 'savings' ? 'savings' : type?.toLowerCase() === 'investment' ? 'investment' : 'checking';
+const transactionKind = (transaction: PluggyTransaction) => transaction.type?.toUpperCase() === 'CREDIT' ? 'income' : transaction.type?.toUpperCase() === 'DEBIT' ? 'expense' : transaction.amount < 0 ? 'expense' : 'income';
 const categoryName = (category: PluggyTransaction['category']) => typeof category === 'string' ? category : category?.name ?? 'Sem categoria';
 
 async function transactionsForAccount(accountId: string) {
@@ -60,37 +56,55 @@ async function transactionsForAccount(accountId: string) {
   return transactions;
 }
 
-export async function syncPluggyItem(itemId: string, profileId: string) {
-  const connection = await supabase.from('open_finance_connections').upsert({ profile_id: profileId, provider: 'pluggy', external_item_id: itemId, status: 'SYNCING' }, { onConflict: 'external_item_id' }).select('id').single();
-  if (connection.error) throw connection.error;
+async function assertItemOwner(itemId: string, profileId: string) {
+  const item = await request<PluggyItem>(`/items/${encodeURIComponent(itemId)}`);
+  if (!item.clientUserId || item.clientUserId !== profileId) throw new Error('Este item Open Finance não pertence ao usuário autenticado.');
+  return item;
+}
+
+export async function syncPluggyItem(itemId: string, profileId: string, trigger: SyncTrigger = 'manual') {
+  const item = await assertItemOwner(itemId, profileId);
+  const connectionResult = await supabase.from('open_finance_connections').upsert({ profile_id: profileId, provider: 'pluggy', external_item_id: itemId, status: 'SYNCING', disconnected_at: null, connector_name: item.connector?.name ?? null, institution_name: item.connector?.name ?? null, institution_logo_url: item.connector?.imageUrl ?? null }, { onConflict: 'external_item_id' }).select('id').single();
+  if (connectionResult.error) throw connectionResult.error;
+  const connection = connectionResult.data;
+  const syncRun = await supabase.from('open_finance_sync_runs').insert({ profile_id: profileId, connection_id: connection.id, external_item_id: itemId, trigger, status: 'RUNNING' }).select('id').single();
+  if (syncRun.error) throw syncRun.error;
 
   try {
     const { results: remoteAccounts = [] } = await request<{ results?: PluggyAccount[] }>(`/accounts?itemId=${encodeURIComponent(itemId)}`);
-    const mappedAccounts = remoteAccounts.map((account) => ({
-      profile_id: profileId, connection_id: connection.data.id, external_account_id: account.id,
-      name: account.marketingName || account.name || 'Conta bancária', type: accountType(account.type),
-      balance: Number(account.balance ?? 0), currency_code: account.currencyCode ?? 'BRL', last_synced_at: new Date().toISOString()
-    }));
+    const mappedAccounts = remoteAccounts.map((account) => ({ profile_id: profileId, connection_id: connection.id, external_account_id: account.id, name: account.marketingName || account.name || 'Conta bancária', type: accountType(account.type), balance: Number(account.balance ?? 0), currency_code: account.currencyCode ?? 'BRL', last_synced_at: new Date().toISOString() }));
+    let transactionsSynced = 0;
     if (mappedAccounts.length) {
-      const stored = await supabase.from('accounts').upsert(mappedAccounts, { onConflict: 'external_account_id' }).select('id, external_account_id, name');
+      const stored = await supabase.from('accounts').upsert(mappedAccounts, { onConflict: 'external_account_id' }).select('id, external_account_id, name, type');
       if (stored.error) throw stored.error;
+      const remoteById = new Map(remoteAccounts.map(account => [account.id, account]));
       for (const account of stored.data) {
+        const remoteAccount = remoteById.get(account.external_account_id);
+        if (account.type === 'credit') {
+          const credit = remoteAccount?.creditData;
+          const card = await supabase.from('cards').upsert({ profile_id: profileId, account_id: account.id, external_account_id: account.external_account_id, source: 'pluggy', name: account.name, brand: credit?.brand ?? null, last_four: credit?.number?.slice(-4) ?? null, credit_limit: Number(credit?.creditLimit ?? 0), available_limit: Number(credit?.availableCreditLimit ?? 0), last_synced_at: new Date().toISOString() }, { onConflict: 'external_account_id' });
+          if (card.error) throw card.error;
+        }
         const remoteTransactions = await transactionsForAccount(account.external_account_id);
         const mappedTransactions = remoteTransactions.map((transaction) => {
           const kind = transactionKind(transaction);
-          return { profile_id: profileId, account_id: account.id, external_transaction_id: transaction.id, source: 'pluggy', member: 'Banco', date: transaction.date.slice(0, 10), description: transaction.description || 'Transação bancária', status: kind === 'income' ? 'Recebido' : 'Enviado', category: categoryName(transaction.category), account: account.name, invoice: kind === 'income' ? 'Receita' : 'Paga', amount: Math.abs(Number(transaction.amount)), kind };
+          return { profile_id: profileId, account_id: account.id, external_transaction_id: transaction.id, source: 'pluggy', member: item.connector?.name ?? 'Banco', date: transaction.date.slice(0, 10), description: transaction.description || 'Transação bancária', status: kind === 'income' ? 'Recebido' : 'Enviado', category: categoryName(transaction.category), account: account.name, invoice: kind === 'income' ? 'Receita' : 'Paga', amount: Math.abs(Number(transaction.amount)), kind };
         });
         if (mappedTransactions.length) {
-          const transactionResult = await supabase.from('transactions').upsert(mappedTransactions, { onConflict: 'external_transaction_id' });
+          const transactionResult = await supabase.from('transactions').upsert(mappedTransactions, { onConflict: 'external_transaction_id' }).select('id');
           if (transactionResult.error) throw transactionResult.error;
+          transactionsSynced += transactionResult.data.length;
         }
       }
     }
-    const result = await supabase.from('open_finance_connections').update({ status: 'SYNCED', last_synced_at: new Date().toISOString(), last_error: null }).eq('id', connection.data.id);
+    const now = new Date().toISOString();
+    const result = await supabase.from('open_finance_connections').update({ status: 'SYNCED', last_synced_at: now, last_successful_sync_at: now, last_error: null }).eq('id', connection.id);
     if (result.error) throw result.error;
-    return { itemId, accounts: mappedAccounts.length, status: 'SYNCED' };
+    await supabase.from('open_finance_sync_runs').update({ status: 'SUCCEEDED', accounts_synced: mappedAccounts.length, transactions_synced: transactionsSynced, finished_at: now }).eq('id', syncRun.data.id);
+    return { itemId, accounts: mappedAccounts.length, transactions: transactionsSynced, status: 'SYNCED' };
   } catch (error) {
-    await supabase.from('open_finance_connections').update({ status: 'ERROR', last_error: error instanceof Error ? error.message : 'Erro de sincronização' }).eq('id', connection.data.id);
+    const message = error instanceof Error ? error.message : 'Erro de sincronização';
+    await Promise.all([supabase.from('open_finance_connections').update({ status: 'ERROR', last_error: message }).eq('id', connection.id), supabase.from('open_finance_sync_runs').update({ status: 'FAILED', error_message: message, finished_at: new Date().toISOString() }).eq('id', syncRun.data.id)]);
     throw error;
   }
 }

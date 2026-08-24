@@ -6,6 +6,7 @@ coverage/
 .env
 .env.*
 !.env.example
+supabase/.temp/
 
 # Logs and system files
 *.log

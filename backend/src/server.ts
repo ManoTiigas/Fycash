@@ -2,7 +2,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { requireAuth } from './auth.js';
 import { createConnectToken, syncPluggyItem } from './pluggy.js';
 import { supabase } from './supabase.js';
@@ -28,7 +28,7 @@ app.use(helmet());
 app.set('trust proxy', 1);
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.split(',') ?? false, methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Authorization', 'Content-Type'] }));
 app.use(express.json());
-app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }));
+app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: request => ipKeyGenerator(request.ip ?? 'unknown') }));
 
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok' });

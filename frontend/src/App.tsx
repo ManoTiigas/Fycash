@@ -10,6 +10,7 @@ type BankCard = { id: string; name: string; brand: string | null; last_four: str
 type BankConnection = { id: string; status: string; institution_name: string | null; institution_logo_url: string | null; last_successful_sync_at: string | null; last_error: string | null };
 type DashboardData = { balance: number; income: number; expenses: number; transactions: ApiTransaction[]; accounts: Account[]; categories: DashboardCategory[]; chart: DashboardChart[]; cards: BankCard[]; connections: BankConnection[] };
 type NewTransaction = { description: string; amount: number; date: string; category: string; kind: 'income' | 'expense'; accountId?: string; account: string };
+type ProfileData = { display_name: string; avatar_url: string | null; email: string | null };
 
 const money = (amount: number) => `R$ ${Number(amount).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const monthLabel = (month: string) => new Date(`${month}-01T12:00:00`).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
@@ -49,6 +50,18 @@ function TransactionModal({ accounts, onClose, onSave }: { accounts: Account[]; 
   return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Nova transação</h2><p>Registre um lançamento manual.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><div className="kind-toggle"><button type="button" className={kind === 'expense' ? 'active expense' : ''} onClick={() => setKind('expense')}>Despesa</button><button type="button" className={kind === 'income' ? 'active income' : ''} onClick={() => setKind('income')}>Receita</button></div><label>Descrição<input name="description" placeholder="Ex.: Mercado" required autoFocus /></label><div className="modal-grid"><label>Valor<input name="amount" type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0,00" required /></label><label>Data<input name="date" type="date" defaultValue={today} required /></label></div><div className="modal-grid"><label>Categoria<input name="category" placeholder="Ex.: Alimentação" required /></label><label>Conta<select name="accountId" defaultValue=""><option value="">Transação manual</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label></div>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit"><Plus />{saving ? 'Salvando...' : 'Adicionar transação'}</button></form></div>;
 }
 
+function ProfileSettingsModal({ profile, connections, onClose, onSave, onSignOut }: { profile: ProfileData | undefined; connections: BankConnection[]; onClose: () => void; onSave: (name: string) => Promise<void>; onSignOut: () => void }) {
+  const [name, setName] = useState(profile?.display_name ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => setName(profile?.display_name ?? ''), [profile?.display_name]);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setError('');
+    try { await onSave(name); } catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Não foi possível salvar o perfil.'); } finally { setSaving(false); }
+  }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Configurações</h2><p>Perfil, segurança e Open Finance.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><form onSubmit={submit}><label>Nome de exibição<input value={name} onChange={event => setName(event.target.value)} maxLength={80} required /></label><label>E-mail<input value={profile?.email ?? ''} disabled aria-label="E-mail da conta" /></label>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit">{saving ? 'Salvando...' : 'Salvar perfil'}</button></form><section className="settings-section"><h3>Open Finance</h3>{connections.length ? connections.map(connection => <p key={connection.id}><strong>{connection.institution_name ?? 'Banco conectado'}</strong><span>{connection.status === 'SYNCED' ? 'Sincronizado' : connection.status}</span></p>) : <p>Nenhum banco conectado.</p>}</section><section className="settings-section"><h3>Segurança</h3><p><strong>Sessão ativa</strong><span>Permanece conectada neste dispositivo.</span></p><button className="signout-button" type="button" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }}>Sair desta conta</button></section></section></div>;
+}
+
 export default function App({ accessToken, onSignOut }: { accessToken: string; onSignOut: () => void }) {
   const [selected, setSelected] = useState(0);
   const [connectToken, setConnectToken] = useState<string>();
@@ -57,6 +70,8 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [statementSearch, setStatementSearch] = useState('');
   const [statementKind, setStatementKind] = useState<'all' | 'income' | 'expense'>('all');
   const [newTransactionOpen, setNewTransactionOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profile, setProfile] = useState<ProfileData>();
   const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
   const apiFetch = (path: string, init?: RequestInit) => fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
   const chartData = financialData?.chart ?? [];
@@ -70,7 +85,13 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     setFinancialData(await response.json() as DashboardData);
   }
 
-  useEffect(() => { void loadDashboard().catch(error => setConnectionStatus(error instanceof Error ? error.message : 'Falha ao carregar os dados.')); }, []);
+  async function loadProfile() {
+    const response = await apiFetch('/api/profile');
+    if (!response.ok) throw new Error('Não foi possível carregar o perfil.');
+    setProfile(await response.json() as ProfileData);
+  }
+
+  useEffect(() => { void Promise.all([loadDashboard(), loadProfile()]).catch(error => setConnectionStatus(error instanceof Error ? error.message : 'Falha ao carregar os dados.')); }, []);
   useEffect(() => setSelected(Math.max(0, chartData.length - 1)), [financialData?.chart]);
 
   async function connectBank() {
@@ -103,6 +124,13 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     await loadDashboard();
   }
 
+  async function updateProfile(displayName: string) {
+    const response = await apiFetch('/api/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName }) });
+    const data = await response.json() as ProfileData & { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível salvar o perfil.');
+    setProfile(data);
+  }
+
   const transactions = financialData?.transactions ?? [];
   const filteredRows = transactions.filter(transaction => (statementKind === 'all' || transaction.kind === statementKind) && [transaction.member, transaction.description, transaction.category, transaction.account].join(' ').toLocaleLowerCase().includes(statementSearch.toLocaleLowerCase()));
   const exportCsv = () => {
@@ -111,10 +139,11 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   };
 
   return <main className="dashboard">
-    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members" aria-label="Bancos conectados">{connectedBanks.slice(0, 3).map(bank => <span className="bank-avatar" key={bank.id} title={bank.institution_name ?? 'Banco conectado'}>{bank.institution_logo_url ? <img src={bank.institution_logo_url} alt="" /> : (bank.institution_name ?? 'B').slice(0, 2).toUpperCase()}</span>)}<button onClick={connectBank} aria-label="Conectar banco com Open Finance" title="Conectar banco"><Plus /></button></div><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }} aria-label="Sair" title="Sair">TC</button></header>
+    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members" aria-label="Bancos conectados">{connectedBanks.slice(0, 3).map(bank => <span className="bank-avatar" key={bank.id} title={bank.institution_name ?? 'Banco conectado'}>{bank.institution_logo_url ? <img src={bank.institution_logo_url} alt="" /> : (bank.institution_name ?? 'B').slice(0, 2).toUpperCase()}</span>)}<button onClick={connectBank} aria-label="Conectar banco com Open Finance" title="Conectar banco"><Plus /></button></div><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => setProfileOpen(true)} aria-label="Abrir configurações" title="Configurações">{profile?.display_name?.slice(0, 2).toUpperCase() ?? 'TC'}</button></header>
     {connectionStatus && <p className="connection-status" role="status">{connectionStatus}</p>}
     {connectToken && <PluggyConnect connectToken={connectToken} includeSandbox={import.meta.env.VITE_PLUGGY_SANDBOX === 'true'} onSuccess={syncConnectedItem} onClose={() => setConnectToken(undefined)} onLoadError={error => setConnectionStatus(error.message)} />}
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}
+    {profileOpen && <ProfileSettingsModal profile={profile} connections={financialData?.connections ?? []} onClose={() => setProfileOpen(false)} onSave={updateProfile} onSignOut={onSignOut} />}
 
     <section className="overview"><div><section className="account-carousel" aria-label="Contas Open Finance">{financialData?.accounts?.length ? financialData.accounts.map(account => <article className="account-card" key={account.id}><span>{account.type === 'credit' ? 'CR' : 'CC'}</span><p>{account.name}</p><strong>{money(account.balance)}</strong><small>{account.last_synced_at ? `Atualizado ${new Date(account.last_synced_at).toLocaleDateString('pt-BR')}` : 'Sincronizada pelo Open Finance'}</small></article>) : <article className="account-card empty"><CreditCard /><p>Conecte uma instituição</p><small>As contas aparecem automaticamente após a sincronização.</small></article>}</section><section className="summary-grid"><article className="summary balance"><p>Saldo Total</p><strong>{money(financialData?.balance ?? 0)}</strong><small><TrendUp /> {financialData?.connections?.length ? `${financialData.connections.length} banco(s) conectado(s)` : 'Conecte seu banco'}</small></article><article className="summary"><p>Receitas <i><ArrowDownLeft /></i></p><strong>{money(financialData?.income ?? 0)}</strong><small><TrendUp /> Movimentações sincronizadas</small></article><article className="summary"><p>Despesas <i className="danger"><ArrowUpRight /></i></p><strong>{money(financialData?.expenses ?? 0)}</strong><small><TrendDown /> Movimentações sincronizadas</small></article></section></div><aside className="cards-panel"><h2><CreditCard /> Cartões</h2><div className="card-stack">{financialData?.cards?.length ? financialData.cards.map(card => <article className="inter" key={card.id}><span>{card.brand?.slice(0, 2).toUpperCase() ?? 'CC'}</span><b>{money(card.available_limit)}</b><small>{card.name}{card.last_four ? ` • ${card.last_four}` : ''}</small><strong>{money(card.credit_limit)}</strong></article>) : <p className="empty-copy">Nenhum cartão de crédito sincronizado.</p>}</div></aside></section>
 

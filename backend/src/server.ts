@@ -28,7 +28,7 @@ const port = Number(process.env.PORT ?? 3000);
 
 app.use(helmet());
 app.set('trust proxy', 1);
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.split(',') ?? false, methods: ['GET', 'POST', 'DELETE'], allowedHeaders: ['Authorization', 'Content-Type'] }));
+app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.split(',') ?? false, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Authorization', 'Content-Type'] }));
 app.use(express.json());
 app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: request => ipKeyGenerator(request.ip ?? 'unknown') }));
 
@@ -43,6 +43,20 @@ const appProfileId = (request: { profileId?: string }) => {
 };
 
 app.use('/api', (request, response, next) => request.path === '/open-finance/pluggy/webhook' ? next() : requireAuth(request, response, next));
+
+app.get('/api/profile', async (request, response) => {
+  const { data, error } = await supabase.from('profiles').select('display_name, avatar_url').eq('id', appProfileId(request)).single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json({ ...data, email: request.userEmail ?? null });
+});
+
+app.patch('/api/profile', async (request, response) => {
+  const displayName = typeof request.body.displayName === 'string' ? request.body.displayName.trim() : '';
+  if (!displayName || displayName.length > 80) return response.status(400).json({ error: 'Informe um nome entre 1 e 80 caracteres.' });
+  const { data, error } = await supabase.from('profiles').update({ display_name: displayName }).eq('id', appProfileId(request)).select('display_name, avatar_url').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json({ ...data, email: request.userEmail ?? null });
+});
 
 app.post('/api/open-finance/pluggy/connect-token', async (request, response) => {
   try {

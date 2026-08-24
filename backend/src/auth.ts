@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { supabase } from './supabase.js';
 
-declare global { namespace Express { interface Request { profileId?: string; } } }
+declare global { namespace Express { interface Request { profileId?: string; userEmail?: string; } } }
 
 export async function requireAuth(request: Request, response: Response, next: NextFunction) {
   const token = request.header('authorization')?.replace(/^Bearer\s+/i, '');
@@ -12,5 +12,6 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   if (!profile && !profileError) ({ data: profile, error: profileError } = await supabase.from('profiles').insert({ user_id: user.id, display_name: user.user_metadata.full_name || user.email?.split('@')[0] || 'Usuário' }).select('id').single());
   if (profileError || !profile) return response.status(500).json({ error: 'Não foi possível carregar o perfil.' });
   request.profileId = profile.id;
+  request.userEmail = user.email ?? undefined;
   next();
 }

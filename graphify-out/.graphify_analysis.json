@@ -1,0 +1,23 @@
+{
+  "communities": {
+    "0": [
+      "app",
+      "app_transactions"
+    ]
+  },
+  "cohesion": {
+    "0": 1.0
+  },
+  "gods": [
+    {
+      "id": "app_transactions",
+      "label": "transactions",
+      "degree": 1
+    }
+  ],
+  "surprises": [],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}

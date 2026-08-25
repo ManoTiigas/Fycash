@@ -4,7 +4,7 @@ import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import multer from 'multer';
-import pdf from 'pdf-parse';
+import pdf from 'pdf-parse/lib/pdf-parse.js';
 import { requireAuth } from './auth.js';
 import { createConnectToken, syncPluggyItem } from './pluggy.js';
 import { supabase } from './supabase.js';

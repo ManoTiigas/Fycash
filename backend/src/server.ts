@@ -3,6 +3,8 @@ import cors from 'cors';
 import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import multer from 'multer';
+import pdf from 'pdf-parse';
 import { requireAuth } from './auth.js';
 import { createConnectToken, syncPluggyItem } from './pluggy.js';
 import { supabase } from './supabase.js';
@@ -27,6 +29,7 @@ const privacyPolicyVersion = '2026-08-25';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
+const statementUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
 
 app.use(helmet());
 app.set('trust proxy', 1);
@@ -43,6 +46,26 @@ const appProfileId = (request: { profileId?: string }) => {
   if (!profileId) throw new Error('Perfil autenticado obrigatório.');
   return profileId;
 };
+
+type ImportedTransaction = { date: string; description: string; amount: number; kind: TransactionKind };
+const normalizeAmount = (value: string) => Number(value.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'));
+function parseStatementPdf(text: string): ImportedTransaction[] {
+  const results: ImportedTransaction[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+/g, ' ').trim();
+    const date = line.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
+    const amountMatches = [...line.matchAll(/-?\s?R?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}/g)];
+    const amountMatch = amountMatches.at(-1);
+    if (!date || !amountMatch) continue;
+    const amount = normalizeAmount(amountMatch[0]);
+    if (!Number.isFinite(amount) || amount === 0) continue;
+    const description = line.slice((date.index ?? 0) + date[0].length, amountMatch.index).replace(/^(?:\s|[-|])+/, '').trim();
+    if (!description || /^(saldo|total|limite)/i.test(description)) continue;
+    const isExpense = amount < 0 || /\b(debito|débito|pagamento|compra|sa[ií]da)\b/i.test(line);
+    results.push({ date: `${date[3]}-${date[2]}-${date[1]}`, description: description.slice(0, 200), amount: Math.abs(amount), kind: isExpense ? 'expense' : 'income' });
+  }
+  return results;
+}
 
 app.use('/api', (request, response, next) => request.path === '/open-finance/pluggy/webhook' ? next() : requireAuth(request, response, next));
 
@@ -200,6 +223,28 @@ app.get('/api/transactions', async (request, response) => {
   const { data, error } = await query;
   if (error) return response.status(500).json({ error: error.message });
   response.json(data);
+});
+
+app.post('/api/imports/statement-pdf', statementUpload.single('statement'), async (request, response) => {
+  const file = request.file;
+  if (!file || file.mimetype !== 'application/pdf' || !file.buffer.subarray(0, 4).equals(Buffer.from('%PDF'))) return response.status(400).json({ error: 'Envie um arquivo PDF válido de até 8 MB.' });
+  try {
+    const parsed = await pdf(file.buffer);
+    const transactions = parseStatementPdf(parsed.text).slice(0, 500);
+    if (!transactions.length) return response.status(422).json({ error: 'Não encontramos transações legíveis. Use um extrato PDF com datas e valores.' });
+    const profileId = appProfileId(request);
+    const dates = transactions.map(item => item.date).sort();
+    const { data: existing, error: existingError } = await supabase.from('transactions').select('date, description, amount, kind').eq('profile_id', profileId).gte('date', dates[0]).lte('date', dates.at(-1)!);
+    if (existingError) return response.status(500).json({ error: existingError.message });
+    const signatures = new Set((existing ?? []).map(item => `${item.date}|${item.description.toLowerCase()}|${Number(item.amount)}|${item.kind}`));
+    const unique = transactions.filter(item => !signatures.has(`${item.date}|${item.description.toLowerCase()}|${item.amount}|${item.kind}`));
+    if (!unique.length) return response.json({ imported: 0, skipped: transactions.length, message: 'Este extrato já foi importado.' });
+    const { error } = await supabase.from('transactions').insert(unique.map(item => ({ profile_id: profileId, member: 'Extrato PDF', date: item.date, description: item.description, status: item.kind === 'income' ? 'Recebido' : 'Enviado', category: 'Importado', account: 'Extrato PDF', invoice: item.kind === 'income' ? 'Receita' : 'Paga', amount: item.amount, kind: item.kind })));
+    if (error) return response.status(500).json({ error: error.message });
+    response.status(201).json({ imported: unique.length, skipped: transactions.length - unique.length, message: 'Extrato importado com sucesso.' });
+  } catch (error) {
+    response.status(422).json({ error: error instanceof Error ? `Não foi possível ler o PDF: ${error.message}` : 'Não foi possível ler o PDF.' });
+  }
 });
 
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ArrowDownLeft, ArrowUpRight, CalendarBlank, CaretDown, CaretLeft, CaretRight, ChartLineUp, CreditCard, Export, MagnifyingGlass, Plus, SlidersHorizontal, TrendDown, TrendUp, X } from '@phosphor-icons/react';
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { ArrowDownLeft, ArrowUpRight, CalendarBlank, CaretDown, CaretLeft, CaretRight, ChartLineUp, CreditCard, Export, FilePdf, MagnifyingGlass, Plus, SlidersHorizontal, TrendDown, TrendUp, X } from '@phosphor-icons/react';
 import { PluggyConnect, type ConnectEventPayload } from 'react-pluggy-connect';
 
 type ApiTransaction = { id: string; member: string; date: string; description: string; status: string; category: string; account: string; invoice: string; amount: number; kind: 'income' | 'expense' };
@@ -85,6 +85,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [newAccountOpen, setNewAccountOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData>();
+  const [importingStatement, setImportingStatement] = useState(false);
   const [openFinanceConsent, setOpenFinanceConsent] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
@@ -184,6 +185,14 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     await loadDashboard();
   }
 
+  async function importStatementPdf(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf' || file.size > 8 * 1024 * 1024) { setConnectionStatus('Envie um PDF de até 8 MB.'); return; }
+    setImportingStatement(true); setConnectionStatus('Lendo extrato PDF...');
+    try { const form = new FormData(); form.append('statement', file); const response = await apiFetch('/api/imports/statement-pdf', { method: 'POST', body: form }); const data = await response.json() as { imported?: number; skipped?: number; error?: string; message?: string }; if (!response.ok) throw new Error(data.error ?? 'Não foi possível importar o extrato.'); await loadDashboard(); setConnectionStatus(`${data.message ?? 'Extrato importado.'} ${data.imported ?? 0} transação(ões) adicionada(s).`); } catch (reason) { setConnectionStatus(reason instanceof Error ? reason.message : 'Não foi possível importar o extrato.'); } finally { setImportingStatement(false); }
+  }
+
   async function updateProfile(displayName: string) {
     const response = await apiFetch('/api/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName }) });
     const data = await response.json() as ProfileData & { error?: string };
@@ -199,7 +208,7 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   };
 
   return <main className="dashboard">
-    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members" aria-label="Bancos conectados">{connectedBanks.slice(0, 3).map(bank => <span className="bank-avatar" key={bank.id} title={bank.institution_name ?? 'Banco conectado'}>{bank.institution_logo_url ? <img src={bank.institution_logo_url} alt="" /> : (bank.institution_name ?? 'B').slice(0, 2).toUpperCase()}</span>)}<button onClick={connectBank} aria-label="Conectar banco com Open Finance" title="Conectar banco"><Plus /></button></div><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => setProfileOpen(true)} aria-label="Abrir configurações" title="Configurações">{profile?.display_name?.slice(0, 2).toUpperCase() ?? 'TC'}</button></header>
+    <header className="topbar"><label className="search-box"><MagnifyingGlass /><input value={statementSearch} onChange={event => setStatementSearch(event.target.value)} placeholder="Pesquisar transações..." /></label><button className="round" aria-label="Filtros"><SlidersHorizontal /></button><button className="date-picker"><CalendarBlank /> Dados Open Finance <CaretDown /></button><div className="members" aria-label="Bancos conectados">{connectedBanks.slice(0, 3).map(bank => <span className="bank-avatar" key={bank.id} title={bank.institution_name ?? 'Banco conectado'}>{bank.institution_logo_url ? <img src={bank.institution_logo_url} alt="" /> : (bank.institution_name ?? 'B').slice(0, 2).toUpperCase()}</span>)}<button onClick={connectBank} aria-label="Conectar banco com Open Finance" title="Conectar banco"><Plus /></button></div><label className="import-pdf"><FilePdf />{importingStatement ? 'Lendo PDF...' : 'Importar extrato PDF'}<input type="file" accept="application/pdf" onChange={importStatementPdf} disabled={importingStatement} /></label><button className="new-transaction" onClick={() => setNewTransactionOpen(true)}><Plus /> Nova Transação</button><button className="profile" onClick={() => setProfileOpen(true)} aria-label="Abrir configurações" title="Configurações">{profile?.display_name?.slice(0, 2).toUpperCase() ?? 'TC'}</button></header>
     {connectionStatus && <p className="connection-status" role="status">{connectionStatus}</p>}
     {connectToken && <PluggyConnect connectToken={connectToken} includeSandbox={import.meta.env.VITE_PLUGGY_SANDBOX === 'true'} onSuccess={syncConnectedItem} onClose={() => setConnectToken(undefined)} onLoadError={error => setConnectionStatus(error.message)} />}
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}

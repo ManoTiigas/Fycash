@@ -157,6 +157,16 @@ app.delete('/api/open-finance/connections/:connectionId', async (request, respon
   response.sendStatus(204);
 });
 
+app.post('/api/accounts', async (request, response) => {
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const type = request.body.type;
+  const balance = Number(request.body.balance);
+  if (!name || name.length > 80 || !['checking', 'savings', 'cash', 'investment'].includes(type) || !Number.isFinite(balance)) return response.status(400).json({ error: 'Dados da conta são inválidos.' });
+  const { data, error } = await supabase.from('accounts').insert({ profile_id: appProfileId(request), name, type, balance }).select('id, name, type, balance, currency_code, last_synced_at').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(201).json(data);
+});
+
 app.post('/api/open-finance/pluggy/webhook', async (request, response) => {
   const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
   if (!webhookSecret || request.query.token !== webhookSecret) return response.sendStatus(401);

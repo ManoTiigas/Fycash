@@ -260,6 +260,21 @@ app.delete('/api/accounts/:accountId', async (request, response) => {
   response.sendStatus(204);
 });
 
+app.patch('/api/accounts/:accountId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const type = request.body.type;
+  const balance = Number(request.body.balance);
+  if (!name || name.length > 80 || !['checking', 'savings', 'cash', 'investment'].includes(type) || !Number.isFinite(balance)) return response.status(400).json({ error: 'Dados da conta são inválidos.' });
+  const { data: account, error: findError } = await supabase.from('accounts').select('id, external_account_id').eq('id', request.params.accountId).eq('profile_id', profileId).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (!account) return response.status(404).json({ error: 'Conta não encontrada.' });
+  if (account.external_account_id) return response.status(409).json({ error: 'Contas Open Finance não podem ser editadas manualmente.' });
+  const { data, error } = await supabase.from('accounts').update({ name, type, balance }).eq('id', account.id).eq('profile_id', profileId).select('id, name, type, balance, currency_code, last_synced_at, external_account_id').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
+});
+
 app.post('/api/cards', async (request, response) => {
   const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
   const limit = Number(request.body.limit);
@@ -267,6 +282,21 @@ app.post('/api/cards', async (request, response) => {
   const { data, error } = await supabase.from('cards').insert({ profile_id: appProfileId(request), source: 'manual', name, brand: typeof request.body.brand === 'string' ? request.body.brand.slice(0, 30) : null, credit_limit: limit, available_limit: limit }).select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at').single();
   if (error) return response.status(500).json({ error: error.message });
   response.status(201).json(data);
+});
+
+app.patch('/api/cards/:cardId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const limit = Number(request.body.limit);
+  if (!name || name.length > 80 || !Number.isFinite(limit) || limit < 0) return response.status(400).json({ error: 'Dados do cartão são inválidos.' });
+  const { data: card, error: findError } = await supabase.from('cards').select('id, source, credit_limit, available_limit').eq('id', request.params.cardId).eq('profile_id', profileId).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (!card) return response.status(404).json({ error: 'Cartão não encontrado.' });
+  if (card.source !== 'manual') return response.status(409).json({ error: 'Cartões Open Finance não podem ser editados manualmente.' });
+  const usedLimit = Math.max(0, Number(card.credit_limit) - Number(card.available_limit));
+  const { data, error } = await supabase.from('cards').update({ name, brand: typeof request.body.brand === 'string' ? request.body.brand.slice(0, 30) : null, credit_limit: limit, available_limit: Math.max(0, limit - usedLimit) }).eq('id', card.id).eq('profile_id', profileId).select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at, source').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
 });
 
 app.delete('/api/cards/:cardId', async (request, response) => {

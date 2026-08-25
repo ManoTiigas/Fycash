@@ -62,16 +62,28 @@ function CardModal({ onClose, onSave }: { onClose: () => void; onSave: (card: { 
   return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Cartão manual</h2><p>Registre gastos e limite do cartão.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div><label>Nome<input name="name" required placeholder="Ex.: Meu cartão" /></label><label>Bandeira<input name="brand" placeholder="Ex.: Visa" /></label><label>Limite<input name="limit" type="number" min="0" step="0.01" required /></label>{error && <p className="modal-error">{error}</p>}<button className="modal-submit" disabled={saving}>{saving ? 'Salvando...' : 'Adicionar cartão'}</button></form></div>;
 }
 
-function ManageAccountsModal({ accounts, onClose, onDelete }: { accounts: Account[]; onClose: () => void; onDelete: (id: string) => Promise<void> }) {
-  const [error, setError] = useState('');
-  async function remove(account: Account) { if (!window.confirm(`Apagar a conta ${account.name}? O extrato será preservado.`)) return; try { await onDelete(account.id); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível apagar a conta.'); } }
-  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Contas manuais</h2><p>Apague somente contas criadas por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{accounts.length ? accounts.map(account => <div className="account-manage-row" key={account.id}><span><strong>{account.name}</strong><small>{money(account.balance)}</small></span><button className="danger-button" type="button" onClick={() => void remove(account)}>Apagar</button></div>) : <p className="empty-copy">Nenhuma conta manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
+function EditAccountModal({ account, onClose, onSave }: { account: Account; onClose: () => void; onSave: (account: { name: string; type: string; balance: number }) => Promise<void> }) {
+  const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); setSaving(true); setError(''); try { await onSave({ name: String(form.get('name') ?? ''), type: String(form.get('type') ?? 'checking'), balance: Number(String(form.get('balance') ?? '0').replace(',', '.')) }); onClose(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível editar a conta.'); } finally { setSaving(false); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Editar conta</h2><p>Atualize o nome, tipo ou saldo atual.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div><label>Nome<input name="name" defaultValue={account.name} required maxLength={80} autoFocus /></label><label>Tipo<select name="type" defaultValue={account.type}><option value="checking">Conta corrente</option><option value="savings">Poupança</option><option value="cash">Dinheiro</option><option value="investment">Investimento</option></select></label><label>Saldo atual<input name="balance" type="number" step="0.01" defaultValue={account.balance} required /></label>{error && <p className="modal-error">{error}</p>}<button className="modal-submit" disabled={saving} type="submit">{saving ? 'Salvando...' : 'Salvar conta'}</button></form></div>;
 }
 
-function ManageCardsModal({ cards, onClose, onDelete }: { cards: BankCard[]; onClose: () => void; onDelete: (id: string) => Promise<void> }) {
+function EditCardModal({ card, onClose, onSave }: { card: BankCard; onClose: () => void; onSave: (card: { name: string; brand: string; limit: number }) => Promise<void> }) {
+  const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); setSaving(true); setError(''); try { await onSave({ name: String(form.get('name') ?? ''), brand: String(form.get('brand') ?? ''), limit: Number(form.get('limit')) }); onClose(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível editar o cartão.'); } finally { setSaving(false); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Editar cartão</h2><p>O limite disponível preserva o valor já utilizado.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div><label>Nome<input name="name" defaultValue={card.name} required autoFocus /></label><label>Bandeira<input name="brand" defaultValue={card.brand ?? ''} /></label><label>Limite<input name="limit" type="number" min="0" step="0.01" defaultValue={card.credit_limit} required /></label>{error && <p className="modal-error">{error}</p>}<button className="modal-submit" disabled={saving} type="submit">{saving ? 'Salvando...' : 'Salvar cartão'}</button></form></div>;
+}
+
+function ManageAccountsModal({ accounts, onClose, onDelete, onEdit }: { accounts: Account[]; onClose: () => void; onDelete: (id: string) => Promise<void>; onEdit: (account: Account) => void }) {
+  const [error, setError] = useState('');
+  async function remove(account: Account) { if (!window.confirm(`Apagar a conta ${account.name}? O extrato será preservado.`)) return; try { await onDelete(account.id); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível apagar a conta.'); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Contas manuais</h2><p>Edite ou apague somente contas criadas por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{accounts.length ? accounts.map(account => <div className="account-manage-row" key={account.id}><span><strong>{account.name}</strong><small>{money(account.balance)}</small></span><div><button className="outline-button" type="button" onClick={() => onEdit(account)}>Editar</button><button className="danger-button" type="button" onClick={() => void remove(account)}>Apagar</button></div></div>) : <p className="empty-copy">Nenhuma conta manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
+}
+
+function ManageCardsModal({ cards, onClose, onDelete, onEdit }: { cards: BankCard[]; onClose: () => void; onDelete: (id: string) => Promise<void>; onEdit: (card: BankCard) => void }) {
   const [error, setError] = useState('');
   async function remove(card: BankCard) { if (!window.confirm(`Apagar o cartão ${card.name}? O extrato será preservado.`)) return; try { await onDelete(card.id); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível apagar o cartão.'); } }
-  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Cartões manuais</h2><p>Apague somente cartões criados por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{cards.length ? cards.map(card => <div className="account-manage-row" key={card.id}><span><strong>{card.name}</strong><small>Disponível: {money(card.available_limit)}</small></span><button className="danger-button" type="button" onClick={() => void remove(card)}>Apagar</button></div>) : <p className="empty-copy">Nenhum cartão manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Cartões manuais</h2><p>Edite ou apague somente cartões criados por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{cards.length ? cards.map(card => <div className="account-manage-row" key={card.id}><span><strong>{card.name}</strong><small>Disponível: {money(card.available_limit)}</small></span><div><button className="outline-button" type="button" onClick={() => onEdit(card)}>Editar</button><button className="danger-button" type="button" onClick={() => void remove(card)}>Apagar</button></div></div>) : <p className="empty-copy">Nenhum cartão manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
 }
 
 function ManageExpensesModal({ expenses, onClose, onDelete }: { expenses: ApiTransaction[]; onClose: () => void; onDelete: (id: string) => Promise<void> }) {
@@ -121,6 +133,8 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [manageAccountsOpen, setManageAccountsOpen] = useState(false);
   const [manageCardsOpen, setManageCardsOpen] = useState(false);
   const [manageExpensesOpen, setManageExpensesOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<Account>();
+  const [editingCard, setEditingCard] = useState<BankCard>();
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData>();
   const [importingStatement, setImportingStatement] = useState(false);
@@ -256,6 +270,20 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     await loadDashboard();
   }
 
+  async function updateManualAccount(accountId: string, account: { name: string; type: string; balance: number }) {
+    const response = await apiFetch(`/api/accounts/${accountId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(account) });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível editar a conta.');
+    await loadDashboard();
+  }
+
+  async function updateManualCard(cardId: string, card: { name: string; brand: string; limit: number }) {
+    const response = await apiFetch(`/api/cards/${cardId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(card) });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível editar o cartão.');
+    await loadDashboard();
+  }
+
   async function deleteManualExpense(transactionId: string) {
     const response = await apiFetch(`/api/transactions/${transactionId}`, { method: 'DELETE' });
     if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? 'Não foi possível apagar a despesa.'); }
@@ -291,9 +319,11 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} cards={financialData?.cards ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}
     {newAccountOpen && <AccountModal onClose={() => setNewAccountOpen(false)} onSave={createManualAccount} />}
     {newCardOpen && <CardModal onClose={() => setNewCardOpen(false)} onSave={createManualCard} />}
-    {manageAccountsOpen && <ManageAccountsModal accounts={financialData?.accounts?.filter(account => !account.external_account_id) ?? []} onClose={() => setManageAccountsOpen(false)} onDelete={deleteManualAccount} />}
-    {manageCardsOpen && <ManageCardsModal cards={financialData?.cards?.filter(card => card.source === 'manual') ?? []} onClose={() => setManageCardsOpen(false)} onDelete={deleteManualCard} />}
+    {manageAccountsOpen && <ManageAccountsModal accounts={financialData?.accounts?.filter(account => !account.external_account_id) ?? []} onClose={() => setManageAccountsOpen(false)} onDelete={deleteManualAccount} onEdit={account => setEditingAccount(account)} />}
+    {manageCardsOpen && <ManageCardsModal cards={financialData?.cards?.filter(card => card.source === 'manual') ?? []} onClose={() => setManageCardsOpen(false)} onDelete={deleteManualCard} onEdit={card => setEditingCard(card)} />}
     {manageExpensesOpen && <ManageExpensesModal expenses={financialData?.transactions?.filter(transaction => transaction.source === 'manual' && transaction.kind === 'expense') ?? []} onClose={() => setManageExpensesOpen(false)} onDelete={deleteManualExpense} />}
+    {editingAccount && <EditAccountModal account={editingAccount} onClose={() => setEditingAccount(undefined)} onSave={account => updateManualAccount(editingAccount.id, account)} />}
+    {editingCard && <EditCardModal card={editingCard} onClose={() => setEditingCard(undefined)} onSave={card => updateManualCard(editingCard.id, card)} />}
     {privacyOpen && <PrivacyConsentModal onClose={() => setPrivacyOpen(false)} onAccept={acceptPrivacyConsent} />}
     {profileOpen && <ProfileSettingsModal profile={profile} connections={financialData?.connections ?? []} openFinanceConsent={openFinanceConsent} onClose={() => setProfileOpen(false)} onSave={updateProfile} onSignOut={onSignOut} onExport={exportPersonalData} onDeleteRequest={requestDataDeletion} onRevokeConsent={revokeOpenFinanceConsent} onToggleOpenFinance={toggleOpenFinanceMode} />}
     {profile?.open_finance_paused && <div className="manual-actions"><button className="manual-card-fab" onClick={() => setNewCardOpen(true)}><CreditCard /> Adicionar cartão</button><button className="manual-account-fab" onClick={() => setManageAccountsOpen(true)}>Gerenciar contas</button><button className="manual-account-fab" onClick={() => setManageCardsOpen(true)}>Gerenciar cartões</button><button className="manual-account-fab" onClick={() => setManageExpensesOpen(true)}>Apagar despesas</button></div>}

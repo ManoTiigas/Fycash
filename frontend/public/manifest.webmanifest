@@ -1,0 +1,14 @@
+{
+  "name": "Fycash - Suas finanças",
+  "short_name": "Fycash",
+  "description": "Controle financeiro pessoal com Open Finance e lançamentos manuais.",
+  "lang": "pt-BR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#dedde2",
+  "theme_color": "#08b577",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

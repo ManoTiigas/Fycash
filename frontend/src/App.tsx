@@ -89,7 +89,11 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [openFinanceConsent, setOpenFinanceConsent] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
-  const apiFetch = (path: string, init?: RequestInit) => fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
+  const apiFetch = async (path: string, init?: RequestInit) => {
+    const response = await fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
+    if (response.status === 401) { setConnectionStatus('Sua sessão expirou. Entre novamente.'); onSignOut(); }
+    return response;
+  };
   const chartData = financialData?.chart ?? [];
   const current = chartData[Math.min(selected, Math.max(chartData.length - 1, 0))];
   const max = Math.max(1, ...chartData.flatMap(item => [item.expenses, item.income]));

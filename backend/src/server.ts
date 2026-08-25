@@ -78,9 +78,16 @@ function parseStatementPdf(text: string): ImportedTransaction[] {
 app.use('/api', (request, response, next) => request.path === '/open-finance/pluggy/webhook' ? next() : requireAuth(request, response, next));
 
 app.get('/api/profile', async (request, response) => {
-  const { data, error } = await supabase.from('profiles').select('display_name, avatar_url').eq('id', appProfileId(request)).single();
+  const { data, error } = await supabase.from('profiles').select('display_name, avatar_url, open_finance_paused, open_finance_paused_at').eq('id', appProfileId(request)).single();
   if (error) return response.status(500).json({ error: error.message });
   response.json({ ...data, email: request.userEmail ?? null });
+});
+
+app.patch('/api/profile/open-finance-mode', async (request, response) => {
+  if (typeof request.body.paused !== 'boolean') return response.status(400).json({ error: 'Informe o estado do Open Finance.' });
+  const { data, error } = await supabase.from('profiles').update({ open_finance_paused: request.body.paused, open_finance_paused_at: request.body.paused ? new Date().toISOString() : null }).eq('id', appProfileId(request)).select('open_finance_paused, open_finance_paused_at').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
 });
 
 app.patch('/api/profile', async (request, response) => {
@@ -140,9 +147,10 @@ app.post('/api/privacy/deletion-request', async (request, response) => {
 app.post('/api/open-finance/pluggy/connect-token', async (request, response) => {
   try {
     const profileId = appProfileId(request);
-    const { data: profile, error } = await supabase.from('profiles').select('id').eq('id', profileId).maybeSingle();
+    const { data: profile, error } = await supabase.from('profiles').select('id, open_finance_paused').eq('id', profileId).maybeSingle();
     if (error) throw error;
     if (!profile) return response.status(400).json({ error: 'O perfil configurado não existe no Supabase.' });
+    if (profile.open_finance_paused) return response.status(409).json({ error: 'Open Finance está pausado. Ative-o nas configurações para conectar um banco.' });
     const { data: consent, error: consentError } = await supabase.from('privacy_consents').select('id').eq('profile_id', profileId).eq('purpose', 'open_finance').eq('version', privacyPolicyVersion).is('revoked_at', null).maybeSingle();
     if (consentError) throw consentError;
     if (!consent) return response.status(403).json({ error: 'Consentimento LGPD para Open Finance é obrigatório.' });
@@ -154,7 +162,10 @@ app.post('/api/open-finance/pluggy/connect-token', async (request, response) => 
 
 app.post('/api/open-finance/pluggy/items/:itemId/sync', async (request, response) => {
   try {
-    const result = await syncPluggyItem(request.params.itemId, appProfileId(request), 'connect');
+    const profileId = appProfileId(request);
+    const { data: profile } = await supabase.from('profiles').select('open_finance_paused').eq('id', profileId).maybeSingle();
+    if (profile?.open_finance_paused) return response.status(409).json({ error: 'Open Finance está pausado.' });
+    const result = await syncPluggyItem(request.params.itemId, profileId, 'connect');
     response.json(result);
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : 'Não foi possível sincronizar os dados bancários.' });
@@ -172,6 +183,8 @@ app.get('/api/open-finance/connections', async (request, response) => {
 
 app.post('/api/open-finance/connections/:connectionId/sync', async (request, response) => {
   const profileId = appProfileId(request);
+  const { data: profile } = await supabase.from('profiles').select('open_finance_paused').eq('id', profileId).maybeSingle();
+  if (profile?.open_finance_paused) return response.status(409).json({ error: 'Open Finance está pausado.' });
   const { data: connection, error } = await supabase.from('open_finance_connections').select('external_item_id').eq('id', request.params.connectionId).eq('profile_id', profileId).maybeSingle();
   if (error) return response.status(500).json({ error: error.message });
   if (!connection) return response.status(404).json({ error: 'Conexão não encontrada.' });
@@ -206,6 +219,8 @@ app.post('/api/open-finance/pluggy/webhook', async (request, response) => {
   if (!payload.itemId || !payload.clientUserId) return response.sendStatus(202);
 
   try {
+    const { data: profile } = await supabase.from('profiles').select('open_finance_paused').eq('id', payload.clientUserId).maybeSingle();
+    if (profile?.open_finance_paused) return response.sendStatus(204);
     const eventId = payload.eventId ?? payload.id;
     if (eventId) {
       const event = await supabase.from('open_finance_webhook_events').upsert({ provider: 'pluggy', external_event_id: eventId, external_item_id: payload.itemId, event_type: payload.event ?? null, status: 'RECEIVED' }, { onConflict: 'provider,external_event_id', ignoreDuplicates: true }).select('id').maybeSingle();
@@ -280,18 +295,22 @@ app.get('/api/dashboard', async (request, response) => {
   if (typeof request.query.to === 'string') query = query.lte('date', request.query.to);
   const { data: transactions, error } = await query;
   if (error) return response.status(500).json({ error: error.message });
-  const income = transactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
-  const expenses = transactions.filter((transaction) => transaction.kind === 'expense').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
   const profileId = appProfileId(request);
-  const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }] = await Promise.all([
+  const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }, { data: profile, error: profileError }] = await Promise.all([
     supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at').eq('profile_id', profileId).order('name'),
     supabase.from('cards').select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at').eq('profile_id', profileId).order('name'),
-    supabase.from('open_finance_connections').select('id, status, institution_name, institution_logo_url, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false })
+    supabase.from('open_finance_connections').select('id, status, institution_name, institution_logo_url, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false }),
+    supabase.from('profiles').select('open_finance_paused, open_finance_paused_at').eq('id', profileId).single()
   ]);
-  if (accountsError || cardsError || connectionsError) return response.status(500).json({ error: accountsError?.message ?? cardsError?.message ?? connectionsError?.message });
+  if (accountsError || cardsError || connectionsError || profileError) return response.status(500).json({ error: accountsError?.message ?? cardsError?.message ?? connectionsError?.message ?? profileError?.message });
+  const cycleStart = profile?.open_finance_paused_at?.slice(0, 10);
+  const cycleTransactions = profile?.open_finance_paused && cycleStart ? transactions.filter(transaction => transaction.date >= cycleStart) : transactions;
+  const income = cycleTransactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+  const expenses = cycleTransactions.filter((transaction) => transaction.kind === 'expense').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+  const initialBalance = profile?.open_finance_paused ? (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0) : 0;
   const categoryTotals = new Map<string, number>();
   const monthly = new Map<string, { income: number; expenses: number }>();
-  for (const transaction of transactions) {
+  for (const transaction of cycleTransactions) {
     if (transaction.kind === 'expense') categoryTotals.set(transaction.category, (categoryTotals.get(transaction.category) ?? 0) + Number(transaction.amount));
     const key = transaction.date.slice(0, 7);
     const value = monthly.get(key) ?? { income: 0, expenses: 0 };
@@ -300,7 +319,7 @@ app.get('/api/dashboard', async (request, response) => {
   }
   const categories = [...categoryTotals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, amount]) => ({ name, amount, percent: expenses ? Math.round(amount / expenses * 100) : 0 }));
   const chart = [...monthly].sort(([a], [b]) => a.localeCompare(b)).slice(-7).map(([month, value]) => ({ month, ...value }));
-  response.json({ balance: income - expenses, income, expenses, transactions, accounts, cards, connections, categories, chart });
+  response.json({ balance: initialBalance + income - expenses, income, expenses, transactions: cycleTransactions, accounts, cards, connections, categories, chart });
 });
 
 if (!process.env.VERCEL) {

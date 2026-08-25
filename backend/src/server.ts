@@ -212,6 +212,17 @@ app.post('/api/accounts', async (request, response) => {
   response.status(201).json(data);
 });
 
+app.delete('/api/accounts/:accountId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const { data: account, error: findError } = await supabase.from('accounts').select('id, external_account_id').eq('id', request.params.accountId).eq('profile_id', profileId).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (!account) return response.status(404).json({ error: 'Conta não encontrada.' });
+  if (account.external_account_id) return response.status(409).json({ error: 'Contas Open Finance não podem ser apagadas manualmente.' });
+  const { error } = await supabase.from('accounts').delete().eq('id', account.id).eq('profile_id', profileId);
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
 app.post('/api/cards', async (request, response) => {
   const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
   const limit = Number(request.body.limit);

@@ -79,9 +79,10 @@ async function ensureManualMonth(profileId: string) {
   }
   if (profile.manual_cycle_month !== month) {
     const opening = Number(profile.manual_cycle_opening_balance);
-    const { data: previousTransactions, error: transactionsError } = await supabase.from('transactions').select('amount, kind').eq('profile_id', profileId).eq('source', 'manual').gte('date', `${profile.manual_cycle_month}-01`).lt('date', `${month}-01`);
+    const { data: previousTransactions, error: transactionsError } = await supabase.from('transactions').select('amount, kind, account_id').eq('profile_id', profileId).eq('source', 'manual').gte('date', `${profile.manual_cycle_month}-01`).lt('date', `${month}-01`);
     if (transactionsError) throw transactionsError;
-    const income = (previousTransactions ?? []).filter(item => item.kind === 'income').reduce((sum, item) => sum + Number(item.amount), 0);
+    const paidFromAccounts = (previousTransactions ?? []).filter(item => item.kind === 'expense' && item.account_id).reduce((sum, item) => sum + Number(item.amount), 0);
+    const income = Math.max(0, balance - opening + paidFromAccounts);
     const expenses = (previousTransactions ?? []).filter(item => item.kind === 'expense').reduce((sum, item) => sum + Number(item.amount), 0);
     const { error: closeError } = await supabase.from('manual_month_closings').upsert({ profile_id: profileId, month: profile.manual_cycle_month, opening_balance: opening, closing_balance: balance, income, expenses }, { onConflict: 'profile_id,month' });
     if (closeError) throw closeError;
@@ -412,9 +413,11 @@ app.get('/api/dashboard', async (request, response) => {
   try { if (profile?.open_finance_paused) manualProfile = await ensureManualMonth(profileId); } catch (cycleError) { return response.status(500).json({ error: cycleError instanceof Error ? cycleError.message : 'Não foi possível fechar o mês manual.' }); }
   const cycleStart = manualProfile?.open_finance_paused ? `${manualProfile.manual_cycle_month ?? currentMonth()}-01` : undefined;
   const cycleTransactions = manualProfile?.open_finance_paused && cycleStart ? transactions.filter(transaction => transaction.source === 'manual' && transaction.date >= cycleStart) : transactions;
-  const income = cycleTransactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+  const recordedIncome = cycleTransactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
   const expenses = cycleTransactions.filter((transaction) => transaction.kind === 'expense').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
   const balance = manualProfile?.open_finance_paused ? (accounts ?? []).filter(account => !account.external_account_id).reduce((sum, account) => sum + Number(account.balance), 0) : (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0);
+  const paidFromAccounts = cycleTransactions.filter(transaction => transaction.kind === 'expense' && transaction.account_id).reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+  const income = manualProfile?.open_finance_paused ? Math.max(0, balance - Number(manualProfile.manual_cycle_opening_balance ?? balance) + paidFromAccounts) : recordedIncome;
   const categoryTotals = new Map<string, number>();
   const monthly = new Map<string, { income: number; expenses: number }>();
   for (const transaction of cycleTransactions) {
@@ -423,6 +426,11 @@ app.get('/api/dashboard', async (request, response) => {
     const value = monthly.get(key) ?? { income: 0, expenses: 0 };
     value[transaction.kind === 'income' ? 'income' : 'expenses'] += Number(transaction.amount);
     monthly.set(key, value);
+  }
+  if (manualProfile?.open_finance_paused) {
+    const value = monthly.get(currentMonth()) ?? { income: 0, expenses: 0 };
+    value.income = income;
+    monthly.set(currentMonth(), value);
   }
   const categories = [...categoryTotals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, amount]) => ({ name, amount, percent: expenses ? Math.round(amount / expenses * 100) : 0 }));
   const chart = [...monthly].sort(([a], [b]) => a.localeCompare(b)).slice(-7).map(([month, value]) => ({ month, ...value }));

@@ -22,6 +22,8 @@ interface Transaction {
   accountId?: string;
 }
 
+const privacyPolicyVersion = '2026-08-25';
+
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -58,12 +60,61 @@ app.patch('/api/profile', async (request, response) => {
   response.json({ ...data, email: request.userEmail ?? null });
 });
 
+app.get('/api/privacy/consent', async (request, response) => {
+  const { data, error } = await supabase.from('privacy_consents').select('granted_at').eq('profile_id', appProfileId(request)).eq('purpose', 'open_finance').eq('version', privacyPolicyVersion).is('revoked_at', null).maybeSingle();
+  if (error) return response.status(500).json({ error: error.message });
+  response.json({ openFinanceConsent: Boolean(data), version: privacyPolicyVersion, grantedAt: data?.granted_at ?? null });
+});
+
+app.post('/api/privacy/consent', async (request, response) => {
+  const profileId = appProfileId(request);
+  const { data: existing, error: findError } = await supabase.from('privacy_consents').select('id').eq('profile_id', profileId).eq('purpose', 'open_finance').eq('version', privacyPolicyVersion).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  const query = existing ? supabase.from('privacy_consents').update({ granted_at: new Date().toISOString(), revoked_at: null }).eq('id', existing.id) : supabase.from('privacy_consents').insert({ profile_id: profileId, purpose: 'open_finance', version: privacyPolicyVersion });
+  const { error } = await query;
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(201).json({ openFinanceConsent: true, version: privacyPolicyVersion });
+});
+
+app.post('/api/privacy/revoke-open-finance', async (request, response) => {
+  const profileId = appProfileId(request); const now = new Date().toISOString();
+  const [{ error: consentError }, { error: connectionsError }] = await Promise.all([
+    supabase.from('privacy_consents').update({ revoked_at: now }).eq('profile_id', profileId).eq('purpose', 'open_finance').is('revoked_at', null),
+    supabase.from('open_finance_connections').update({ status: 'DISCONNECTED', disconnected_at: now }).eq('profile_id', profileId).is('disconnected_at', null)
+  ]);
+  if (consentError || connectionsError) return response.status(500).json({ error: consentError?.message ?? connectionsError?.message });
+  response.sendStatus(204);
+});
+
+app.get('/api/privacy/export', async (request, response) => {
+  const profileId = appProfileId(request);
+  const [profile, accounts, cards, transactions, connections, consents] = await Promise.all([
+    supabase.from('profiles').select('display_name, avatar_url, created_at').eq('id', profileId).single(), supabase.from('accounts').select('*').eq('profile_id', profileId), supabase.from('cards').select('*').eq('profile_id', profileId), supabase.from('transactions').select('*').eq('profile_id', profileId).order('date', { ascending: false }), supabase.from('open_finance_connections').select('provider, institution_name, status, created_at, last_synced_at, disconnected_at').eq('profile_id', profileId), supabase.from('privacy_consents').select('purpose, version, granted_at, revoked_at').eq('profile_id', profileId)
+  ]);
+  const failure = [profile, accounts, cards, transactions, connections, consents].find(result => result.error)?.error;
+  if (failure) return response.status(500).json({ error: failure.message });
+  response.json({ format: 'fycash-data-export-v1', exported_at: new Date().toISOString(), profile: { ...profile.data, email: request.userEmail ?? null }, accounts: accounts.data, cards: cards.data, transactions: transactions.data, open_finance_connections: connections.data, consents: consents.data });
+});
+
+app.post('/api/privacy/deletion-request', async (request, response) => {
+  const profileId = appProfileId(request);
+  const { data: existing, error: findError } = await supabase.from('data_subject_requests').select('id, requested_at').eq('profile_id', profileId).eq('request_type', 'deletion').eq('status', 'PENDING').maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (existing) return response.status(202).json({ request: existing, alreadyRequested: true });
+  const { data, error } = await supabase.from('data_subject_requests').insert({ profile_id: profileId, request_type: 'deletion' }).select('id, requested_at').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(202).json({ request: data, alreadyRequested: false });
+});
+
 app.post('/api/open-finance/pluggy/connect-token', async (request, response) => {
   try {
     const profileId = appProfileId(request);
     const { data: profile, error } = await supabase.from('profiles').select('id').eq('id', profileId).maybeSingle();
     if (error) throw error;
     if (!profile) return response.status(400).json({ error: 'O perfil configurado não existe no Supabase.' });
+    const { data: consent, error: consentError } = await supabase.from('privacy_consents').select('id').eq('profile_id', profileId).eq('purpose', 'open_finance').eq('version', privacyPolicyVersion).is('revoked_at', null).maybeSingle();
+    if (consentError) throw consentError;
+    if (!consent) return response.status(403).json({ error: 'Consentimento LGPD para Open Finance é obrigatório.' });
     response.json({ connectToken: await createConnectToken(profileId) });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : 'Não foi possível iniciar a conexão bancária.' });
@@ -172,7 +223,7 @@ app.get('/api/dashboard', async (request, response) => {
   const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }] = await Promise.all([
     supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at').eq('profile_id', profileId).order('name'),
     supabase.from('cards').select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at').eq('profile_id', profileId).order('name'),
-    supabase.from('open_finance_connections').select('id, status, institution_name, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false })
+    supabase.from('open_finance_connections').select('id, status, institution_name, institution_logo_url, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false })
   ]);
   if (accountsError || cardsError || connectionsError) return response.status(500).json({ error: accountsError?.message ?? cardsError?.message ?? connectionsError?.message });
   const categoryTotals = new Map<string, number>();

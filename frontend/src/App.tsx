@@ -50,7 +50,13 @@ function TransactionModal({ accounts, onClose, onSave }: { accounts: Account[]; 
   return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><form className="transaction-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Nova transação</h2><p>Registre um lançamento manual.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><div className="kind-toggle"><button type="button" className={kind === 'expense' ? 'active expense' : ''} onClick={() => setKind('expense')}>Despesa</button><button type="button" className={kind === 'income' ? 'active income' : ''} onClick={() => setKind('income')}>Receita</button></div><label>Descrição<input name="description" placeholder="Ex.: Mercado" required autoFocus /></label><div className="modal-grid"><label>Valor<input name="amount" type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0,00" required /></label><label>Data<input name="date" type="date" defaultValue={today} required /></label></div><div className="modal-grid"><label>Categoria<input name="category" placeholder="Ex.: Alimentação" required /></label><label>Conta<select name="accountId" defaultValue=""><option value="">Transação manual</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label></div>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit"><Plus />{saving ? 'Salvando...' : 'Adicionar transação'}</button></form></div>;
 }
 
-function ProfileSettingsModal({ profile, connections, onClose, onSave, onSignOut }: { profile: ProfileData | undefined; connections: BankConnection[]; onClose: () => void; onSave: (name: string) => Promise<void>; onSignOut: () => void }) {
+function PrivacyConsentModal({ onClose, onAccept }: { onClose: () => void; onAccept: () => Promise<void> }) {
+  const [accepted, setAccepted] = useState(false); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  async function submit() { setSaving(true); setError(''); try { await onAccept(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível registrar o consentimento.'); } finally { setSaving(false); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal privacy-modal" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Privacidade e Open Finance</h2><p>Seu consentimento é necessário antes da conexão bancária.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div><p>Ao continuar, a Fycash acessará dados de contas, cartões e transações escolhidos por você na Pluggy para exibir suas finanças. Você pode revogar o consentimento nas configurações a qualquer momento.</p><label className="consent-check"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} /> Li e concordo com o tratamento destes dados para o Open Finance.</label>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={!accepted || saving} type="button" onClick={submit}>{saving ? 'Salvando...' : 'Concordar e conectar banco'}</button></section></div>;
+}
+
+function ProfileSettingsModal({ profile, connections, openFinanceConsent, onClose, onSave, onSignOut, onExport, onDeleteRequest, onRevokeConsent }: { profile: ProfileData | undefined; connections: BankConnection[]; openFinanceConsent: boolean; onClose: () => void; onSave: (name: string) => Promise<void>; onSignOut: () => void; onExport: () => Promise<void>; onDeleteRequest: () => Promise<void>; onRevokeConsent: () => Promise<void> }) {
   const [name, setName] = useState(profile?.display_name ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -59,7 +65,7 @@ function ProfileSettingsModal({ profile, connections, onClose, onSave, onSignOut
     event.preventDefault(); setSaving(true); setError('');
     try { await onSave(name); } catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Não foi possível salvar o perfil.'); } finally { setSaving(false); }
   }
-  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Configurações</h2><p>Perfil, segurança e Open Finance.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><form onSubmit={submit}><label>Nome de exibição<input value={name} onChange={event => setName(event.target.value)} maxLength={80} required /></label><label>E-mail<input value={profile?.email ?? ''} disabled aria-label="E-mail da conta" /></label>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit">{saving ? 'Salvando...' : 'Salvar perfil'}</button></form><section className="settings-section"><h3>Open Finance</h3>{connections.length ? connections.map(connection => <p key={connection.id}><strong>{connection.institution_name ?? 'Banco conectado'}</strong><span>{connection.status === 'SYNCED' ? 'Sincronizado' : connection.status}</span></p>) : <p>Nenhum banco conectado.</p>}</section><section className="settings-section"><h3>Segurança</h3><p><strong>Sessão ativa</strong><span>Permanece conectada neste dispositivo.</span></p><button className="signout-button" type="button" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }}>Sair desta conta</button></section></section></div>;
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Configurações</h2><p>Perfil, segurança e Open Finance.</p></div><button type="button" className="modal-close" onClick={onClose} aria-label="Fechar"><X /></button></div><form onSubmit={submit}><label>Nome de exibição<input value={name} onChange={event => setName(event.target.value)} maxLength={80} required /></label><label>E-mail<input value={profile?.email ?? ''} disabled aria-label="E-mail da conta" /></label>{error && <p className="modal-error" role="alert">{error}</p>}<button className="modal-submit" disabled={saving} type="submit">{saving ? 'Salvando...' : 'Salvar perfil'}</button></form><section className="settings-section"><h3>Open Finance</h3>{connections.length ? connections.map(connection => <p key={connection.id}><strong>{connection.institution_name ?? 'Banco conectado'}</strong><span>{connection.status === 'SYNCED' ? 'Sincronizado' : connection.status}</span></p>) : <p>Nenhum banco conectado.</p>}{openFinanceConsent && <button className="outline-button" type="button" onClick={() => { if (window.confirm('Revogar o consentimento desconectará seus bancos. Continuar?')) void onRevokeConsent(); }}>Revogar consentimento</button>}</section><section className="settings-section"><h3>Privacidade e LGPD</h3><p><strong>Portabilidade</strong><span>Baixe uma cópia dos seus dados.</span></p><button className="outline-button" type="button" onClick={() => void onExport()}>Exportar meus dados</button><button className="danger-button" type="button" onClick={() => { if (window.confirm('Enviar solicitação de exclusão dos seus dados?')) void onDeleteRequest(); }}>Solicitar exclusão de dados</button></section><section className="settings-section"><h3>Segurança</h3><p><strong>Sessão ativa</strong><span>Permanece conectada neste dispositivo.</span></p><button className="signout-button" type="button" onClick={() => { if (window.confirm('Deseja encerrar sua sessão neste dispositivo?')) onSignOut(); }}>Sair desta conta</button></section></section></div>;
 }
 
 export default function App({ accessToken, onSignOut }: { accessToken: string; onSignOut: () => void }) {
@@ -72,6 +78,8 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [newTransactionOpen, setNewTransactionOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData>();
+  const [openFinanceConsent, setOpenFinanceConsent] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3000');
   const apiFetch = (path: string, init?: RequestInit) => fetch(`${apiUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...init?.headers } });
   const chartData = financialData?.chart ?? [];
@@ -91,10 +99,22 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     setProfile(await response.json() as ProfileData);
   }
 
-  useEffect(() => { void Promise.all([loadDashboard(), loadProfile()]).catch(error => setConnectionStatus(error instanceof Error ? error.message : 'Falha ao carregar os dados.')); }, []);
+  async function loadPrivacyConsent() {
+    const response = await apiFetch('/api/privacy/consent');
+    if (!response.ok) throw new Error('Não foi possível carregar as preferências de privacidade.');
+    const data = await response.json() as { openFinanceConsent: boolean };
+    setOpenFinanceConsent(data.openFinanceConsent);
+  }
+
+  useEffect(() => { void Promise.all([loadDashboard(), loadProfile(), loadPrivacyConsent()]).catch(error => setConnectionStatus(error instanceof Error ? error.message : 'Falha ao carregar os dados.')); }, []);
   useEffect(() => setSelected(Math.max(0, chartData.length - 1)), [financialData?.chart]);
 
-  async function connectBank() {
+  function connectBank() {
+    if (!openFinanceConsent) { setPrivacyOpen(true); return; }
+    void startBankConnection();
+  }
+
+  async function startBankConnection() {
     setConnectionStatus('Preparando conexão segura...');
     try {
       const response = await apiFetch('/api/open-finance/pluggy/connect-token', { method: 'POST' });
@@ -102,6 +122,32 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
       if (!response.ok || !data.connectToken) throw new Error(data.error ?? 'Não foi possível abrir a Pluggy.');
       setConnectToken(data.connectToken); setConnectionStatus('');
     } catch (error) { setConnectionStatus(error instanceof Error ? error.message : 'Falha ao iniciar a conexão.'); }
+  }
+
+  async function acceptPrivacyConsent() {
+    const response = await apiFetch('/api/privacy/consent', { method: 'POST' });
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível registrar o consentimento.');
+    setOpenFinanceConsent(true); setPrivacyOpen(false); await startBankConnection();
+  }
+
+  async function exportPersonalData() {
+    const response = await apiFetch('/api/privacy/export');
+    const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível exportar seus dados.');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })); const link = document.createElement('a'); link.href = url; link.download = 'fycash-meus-dados.json'; link.click(); URL.revokeObjectURL(url);
+  }
+
+  async function requestDataDeletion() {
+    const response = await apiFetch('/api/privacy/deletion-request', { method: 'POST' }); const data = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? 'Não foi possível enviar a solicitação.');
+    setConnectionStatus('Solicitação de exclusão registrada.');
+  }
+
+  async function revokeOpenFinanceConsent() {
+    const response = await apiFetch('/api/privacy/revoke-open-finance', { method: 'POST' });
+    if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? 'Não foi possível revogar o consentimento.'); }
+    setOpenFinanceConsent(false); await loadDashboard(); setConnectionStatus('Consentimento revogado e bancos desconectados.');
   }
 
   async function syncConnectedItem(payload: ConnectEventPayload) {
@@ -143,7 +189,8 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     {connectionStatus && <p className="connection-status" role="status">{connectionStatus}</p>}
     {connectToken && <PluggyConnect connectToken={connectToken} includeSandbox={import.meta.env.VITE_PLUGGY_SANDBOX === 'true'} onSuccess={syncConnectedItem} onClose={() => setConnectToken(undefined)} onLoadError={error => setConnectionStatus(error.message)} />}
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}
-    {profileOpen && <ProfileSettingsModal profile={profile} connections={financialData?.connections ?? []} onClose={() => setProfileOpen(false)} onSave={updateProfile} onSignOut={onSignOut} />}
+    {privacyOpen && <PrivacyConsentModal onClose={() => setPrivacyOpen(false)} onAccept={acceptPrivacyConsent} />}
+    {profileOpen && <ProfileSettingsModal profile={profile} connections={financialData?.connections ?? []} openFinanceConsent={openFinanceConsent} onClose={() => setProfileOpen(false)} onSave={updateProfile} onSignOut={onSignOut} onExport={exportPersonalData} onDeleteRequest={requestDataDeletion} onRevokeConsent={revokeOpenFinanceConsent} />}
 
     <section className="overview"><div><section className="account-carousel" aria-label="Contas Open Finance">{financialData?.accounts?.length ? financialData.accounts.map(account => <article className="account-card" key={account.id}><span>{account.type === 'credit' ? 'CR' : 'CC'}</span><p>{account.name}</p><strong>{money(account.balance)}</strong><small>{account.last_synced_at ? `Atualizado ${new Date(account.last_synced_at).toLocaleDateString('pt-BR')}` : 'Sincronizada pelo Open Finance'}</small></article>) : <article className="account-card empty"><CreditCard /><p>Conecte uma instituição</p><small>As contas aparecem automaticamente após a sincronização.</small></article>}</section><section className="summary-grid"><article className="summary balance"><p>Saldo Total</p><strong>{money(financialData?.balance ?? 0)}</strong><small><TrendUp /> {financialData?.connections?.length ? `${financialData.connections.length} banco(s) conectado(s)` : 'Conecte seu banco'}</small></article><article className="summary"><p>Receitas <i><ArrowDownLeft /></i></p><strong>{money(financialData?.income ?? 0)}</strong><small><TrendUp /> Movimentações sincronizadas</small></article><article className="summary"><p>Despesas <i className="danger"><ArrowUpRight /></i></p><strong>{money(financialData?.expenses ?? 0)}</strong><small><TrendDown /> Movimentações sincronizadas</small></article></section></div><aside className="cards-panel"><h2><CreditCard /> Cartões</h2><div className="card-stack">{financialData?.cards?.length ? financialData.cards.map(card => <article className="inter" key={card.id}><span>{card.brand?.slice(0, 2).toUpperCase() ?? 'CC'}</span><b>{money(card.available_limit)}</b><small>{card.name}{card.last_four ? ` • ${card.last_four}` : ''}</small><strong>{money(card.credit_limit)}</strong></article>) : <p className="empty-copy">Nenhum cartão de crédito sincronizado.</p>}</div></aside></section>
 

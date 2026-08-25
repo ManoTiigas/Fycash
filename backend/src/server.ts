@@ -22,6 +22,7 @@ interface Transaction {
   amount: number;
   kind: TransactionKind;
   accountId?: string;
+  cardId?: string;
 }
 
 const privacyPolicyVersion = '2026-08-25';
@@ -206,7 +207,16 @@ app.post('/api/accounts', async (request, response) => {
   const type = request.body.type;
   const balance = Number(request.body.balance);
   if (!name || name.length > 80 || !['checking', 'savings', 'cash', 'investment'].includes(type) || !Number.isFinite(balance)) return response.status(400).json({ error: 'Dados da conta são inválidos.' });
-  const { data, error } = await supabase.from('accounts').insert({ profile_id: appProfileId(request), name, type, balance }).select('id, name, type, balance, currency_code, last_synced_at').single();
+  const { data, error } = await supabase.from('accounts').insert({ profile_id: appProfileId(request), name, type, balance, initial_balance: balance }).select('id, name, type, balance, currency_code, last_synced_at').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(201).json(data);
+});
+
+app.post('/api/cards', async (request, response) => {
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const limit = Number(request.body.limit);
+  if (!name || name.length > 80 || !Number.isFinite(limit) || limit < 0) return response.status(400).json({ error: 'Dados do cartão são inválidos.' });
+  const { data, error } = await supabase.from('cards').insert({ profile_id: appProfileId(request), source: 'manual', name, brand: typeof request.body.brand === 'string' ? request.body.brand.slice(0, 30) : null, credit_limit: limit, available_limit: limit }).select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at').single();
   if (error) return response.status(500).json({ error: error.message });
   response.status(201).json(data);
 });
@@ -271,20 +281,28 @@ app.post('/api/imports/statement-pdf', statementUpload.single('statement'), asyn
 });
 
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {
-  const { member, date, description, status, category, account, accountId, invoice, amount, kind } = request.body;
+  const { member, date, description, status, category, account, accountId, cardId, invoice, amount, kind } = request.body;
   if (!member || !date || !description || !status || !category || !account || !invoice || typeof amount !== 'number' || !Number.isFinite(amount) || (kind !== 'income' && kind !== 'expense')) {
     response.status(400).json({ error: 'Dados da transação são inválidos.' });
     return;
   }
 
   const profileId = appProfileId(request);
+  const { data: mode } = await supabase.from('profiles').select('open_finance_paused').eq('id', profileId).single();
+  if (!mode?.open_finance_paused) return response.status(409).json({ error: 'Ative o modo manual para registrar lançamentos manuais.' });
+  let ownedAccount: { id: string; balance: number } | null = null;
   if (accountId) {
-    const { data: ownedAccount, error: accountError } = await supabase.from('accounts').select('id').eq('id', accountId).eq('profile_id', profileId).maybeSingle();
+    const { data, error: accountError } = await supabase.from('accounts').select('id, balance').eq('id', accountId).eq('profile_id', profileId).maybeSingle();
     if (accountError) return response.status(500).json({ error: accountError.message });
-    if (!ownedAccount) return response.status(400).json({ error: 'A conta selecionada não pertence ao usuário.' });
+    if (!data) return response.status(400).json({ error: 'A conta selecionada não pertence ao usuário.' });
+    ownedAccount = data;
   }
-  const { data, error } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId ?? null, member, date, description, status, category, account, invoice, amount, kind }).select().single();
+  let ownedCard: { id: string; available_limit: number } | null = null;
+  if (cardId) { const { data, error } = await supabase.from('cards').select('id, available_limit').eq('id', cardId).eq('profile_id', profileId).eq('source', 'manual').maybeSingle(); if (error) return response.status(500).json({ error: error.message }); if (!data || kind !== 'expense' || data.available_limit < amount) return response.status(400).json({ error: 'Cartão inválido ou limite insuficiente.' }); ownedCard = data; }
+  const { data, error } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId ?? null, card_id: cardId ?? null, source: 'manual', member, date, description, status, category, account, invoice, amount, kind }).select().single();
   if (error) return response.status(500).json({ error: error.message });
+  if (ownedAccount) { const nextBalance = Number(ownedAccount.balance) + (kind === 'income' ? amount : -amount); await supabase.from('accounts').update({ balance: nextBalance }).eq('id', ownedAccount.id); }
+  if (ownedCard) await supabase.from('cards').update({ available_limit: Number(ownedCard.available_limit) - amount }).eq('id', ownedCard.id);
   response.status(201).json(data);
 });
 

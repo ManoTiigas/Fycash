@@ -33,7 +33,15 @@ const statementUpload = multer({ storage: multer.memoryStorage(), limits: { file
 
 app.use(helmet());
 app.set('trust proxy', 1);
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.split(',') ?? false, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Authorization', 'Content-Type'] }));
+const configuredOrigins = process.env.FRONTEND_ORIGIN?.split(',').map(origin => origin.trim()).filter(Boolean) ?? [];
+app.use(cors({
+  origin(origin, callback) {
+    const localDevelopmentOrigin = Boolean(origin && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin));
+    callback(null, !origin || configuredOrigins.includes(origin) || localDevelopmentOrigin);
+  },
+  methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Authorization', 'Content-Type']
+}));
 app.use(express.json());
 app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: request => ipKeyGenerator(request.ip ?? 'unknown') }));
 

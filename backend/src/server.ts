@@ -56,6 +56,42 @@ const appProfileId = (request: { profileId?: string }) => {
   return profileId;
 };
 
+const currentMonth = () => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+  return `${value('year')}-${value('month')}`;
+};
+
+async function ensureManualMonth(profileId: string) {
+  const { data: profile, error: profileError } = await supabase.from('profiles').select('open_finance_paused, open_finance_paused_at, manual_cycle_month, manual_cycle_opening_balance').eq('id', profileId).single();
+  if (profileError) throw profileError;
+  if (!profile.open_finance_paused) return profile;
+
+  const { data: accounts, error: accountsError } = await supabase.from('accounts').select('balance').eq('profile_id', profileId).is('external_account_id', null);
+  if (accountsError) throw accountsError;
+  const balance = (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0);
+  const month = currentMonth();
+
+  if (!profile.manual_cycle_month || profile.manual_cycle_opening_balance === null) {
+    const { error } = await supabase.from('profiles').update({ manual_cycle_month: month, manual_cycle_opening_balance: balance }).eq('id', profileId);
+    if (error) throw error;
+    return { ...profile, manual_cycle_month: month, manual_cycle_opening_balance: balance };
+  }
+  if (profile.manual_cycle_month !== month) {
+    const opening = Number(profile.manual_cycle_opening_balance);
+    const { data: previousTransactions, error: transactionsError } = await supabase.from('transactions').select('amount, kind').eq('profile_id', profileId).eq('source', 'manual').gte('date', `${profile.manual_cycle_month}-01`).lt('date', `${month}-01`);
+    if (transactionsError) throw transactionsError;
+    const income = (previousTransactions ?? []).filter(item => item.kind === 'income').reduce((sum, item) => sum + Number(item.amount), 0);
+    const expenses = (previousTransactions ?? []).filter(item => item.kind === 'expense').reduce((sum, item) => sum + Number(item.amount), 0);
+    const { error: closeError } = await supabase.from('manual_month_closings').upsert({ profile_id: profileId, month: profile.manual_cycle_month, opening_balance: opening, closing_balance: balance, income, expenses }, { onConflict: 'profile_id,month' });
+    if (closeError) throw closeError;
+    const { error: updateError } = await supabase.from('profiles').update({ manual_cycle_month: month, manual_cycle_opening_balance: balance }).eq('id', profileId);
+    if (updateError) throw updateError;
+    return { ...profile, manual_cycle_month: month, manual_cycle_opening_balance: balance };
+  }
+  return profile;
+}
+
 type ImportedTransaction = { date: string; description: string; amount: number; kind: TransactionKind };
 const normalizeAmount = (value: string) => Number(value.replace(/[^0-9,.-]/g, '').replace(/\./g, '').replace(',', '.'));
 function parseStatementPdf(text: string): ImportedTransaction[] {
@@ -232,6 +268,17 @@ app.post('/api/cards', async (request, response) => {
   response.status(201).json(data);
 });
 
+app.delete('/api/cards/:cardId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const { data: card, error: findError } = await supabase.from('cards').select('id, source').eq('id', request.params.cardId).eq('profile_id', profileId).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (!card) return response.status(404).json({ error: 'Cartão não encontrado.' });
+  if (card.source !== 'manual') return response.status(409).json({ error: 'Cartões Open Finance não podem ser apagados manualmente.' });
+  const { error } = await supabase.from('cards').delete().eq('id', card.id).eq('profile_id', profileId);
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
 app.post('/api/open-finance/pluggy/webhook', async (request, response) => {
   const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
   if (!webhookSecret || request.query.token !== webhookSecret) return response.sendStatus(401);
@@ -317,6 +364,35 @@ app.post('/api/transactions', async (request: Request<object, Transaction, Parti
   response.status(201).json(data);
 });
 
+app.delete('/api/transactions/:transactionId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const { data: transaction, error: findError } = await supabase.from('transactions').select('id, kind, amount, account_id, card_id, source').eq('id', request.params.transactionId).eq('profile_id', profileId).maybeSingle();
+  if (findError) return response.status(500).json({ error: findError.message });
+  if (!transaction) return response.status(404).json({ error: 'Despesa não encontrada.' });
+  if (transaction.source !== 'manual' || transaction.kind !== 'expense') return response.status(409).json({ error: 'Somente despesas manuais podem ser apagadas.' });
+
+  if (transaction.account_id) {
+    const { data: account, error: accountError } = await supabase.from('accounts').select('id, balance').eq('id', transaction.account_id).eq('profile_id', profileId).maybeSingle();
+    if (accountError) return response.status(500).json({ error: accountError.message });
+    if (account) {
+      const { error } = await supabase.from('accounts').update({ balance: Number(account.balance) + Number(transaction.amount) }).eq('id', account.id).eq('profile_id', profileId);
+      if (error) return response.status(500).json({ error: error.message });
+    }
+  }
+  if (transaction.card_id) {
+    const { data: card, error: cardError } = await supabase.from('cards').select('id, credit_limit, available_limit').eq('id', transaction.card_id).eq('profile_id', profileId).eq('source', 'manual').maybeSingle();
+    if (cardError) return response.status(500).json({ error: cardError.message });
+    if (card) {
+      const available = Math.min(Number(card.credit_limit), Number(card.available_limit) + Number(transaction.amount));
+      const { error } = await supabase.from('cards').update({ available_limit: available }).eq('id', card.id).eq('profile_id', profileId);
+      if (error) return response.status(500).json({ error: error.message });
+    }
+  }
+  const { error } = await supabase.from('transactions').delete().eq('id', transaction.id).eq('profile_id', profileId);
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
 app.get('/api/dashboard', async (request, response) => {
   let query = supabase.from('transactions').select('*').order('date', { ascending: false });
   query = query.eq('profile_id', appProfileId(request));
@@ -326,17 +402,19 @@ app.get('/api/dashboard', async (request, response) => {
   if (error) return response.status(500).json({ error: error.message });
   const profileId = appProfileId(request);
   const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }, { data: profile, error: profileError }] = await Promise.all([
-    supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at').eq('profile_id', profileId).order('name'),
-    supabase.from('cards').select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at').eq('profile_id', profileId).order('name'),
+    supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at, external_account_id').eq('profile_id', profileId).order('name'),
+    supabase.from('cards').select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at, source').eq('profile_id', profileId).order('name'),
     supabase.from('open_finance_connections').select('id, status, institution_name, institution_logo_url, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false }),
-    supabase.from('profiles').select('open_finance_paused, open_finance_paused_at').eq('id', profileId).single()
+    supabase.from('profiles').select('open_finance_paused, open_finance_paused_at, manual_cycle_month, manual_cycle_opening_balance').eq('id', profileId).single()
   ]);
   if (accountsError || cardsError || connectionsError || profileError) return response.status(500).json({ error: accountsError?.message ?? cardsError?.message ?? connectionsError?.message ?? profileError?.message });
-  const cycleStart = profile?.open_finance_paused_at?.slice(0, 10);
-  const cycleTransactions = profile?.open_finance_paused && cycleStart ? transactions.filter(transaction => transaction.date >= cycleStart) : transactions;
+  let manualProfile = profile;
+  try { if (profile?.open_finance_paused) manualProfile = await ensureManualMonth(profileId); } catch (cycleError) { return response.status(500).json({ error: cycleError instanceof Error ? cycleError.message : 'Não foi possível fechar o mês manual.' }); }
+  const cycleStart = manualProfile?.open_finance_paused ? `${manualProfile.manual_cycle_month ?? currentMonth()}-01` : undefined;
+  const cycleTransactions = manualProfile?.open_finance_paused && cycleStart ? transactions.filter(transaction => transaction.source === 'manual' && transaction.date >= cycleStart) : transactions;
   const income = cycleTransactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
   const expenses = cycleTransactions.filter((transaction) => transaction.kind === 'expense').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
-  const initialBalance = profile?.open_finance_paused ? (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0) : 0;
+  const balance = manualProfile?.open_finance_paused ? (accounts ?? []).filter(account => !account.external_account_id).reduce((sum, account) => sum + Number(account.balance), 0) : (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0);
   const categoryTotals = new Map<string, number>();
   const monthly = new Map<string, { income: number; expenses: number }>();
   for (const transaction of cycleTransactions) {
@@ -348,7 +426,7 @@ app.get('/api/dashboard', async (request, response) => {
   }
   const categories = [...categoryTotals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, amount]) => ({ name, amount, percent: expenses ? Math.round(amount / expenses * 100) : 0 }));
   const chart = [...monthly].sort(([a], [b]) => a.localeCompare(b)).slice(-7).map(([month, value]) => ({ month, ...value }));
-  response.json({ balance: initialBalance + income - expenses, income, expenses, transactions: cycleTransactions, accounts, cards, connections, categories, chart });
+  response.json({ balance, income, expenses, transactions: cycleTransactions, accounts, cards, connections, categories, chart });
 });
 
 if (!process.env.VERCEL) {

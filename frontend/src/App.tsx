@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
-import { ArrowDownLeft, ArrowUpRight, CalendarBlank, CaretDown, CaretLeft, CaretRight, ChartLineUp, CreditCard, Export, FilePdf, MagnifyingGlass, Plus, SlidersHorizontal, TrendDown, TrendUp, X } from '@phosphor-icons/react';
+import { ArrowDownLeft, ArrowUpRight, CalendarBlank, CaretDown, CaretLeft, CaretRight, ChartLineUp, CreditCard, Export, FilePdf, MagnifyingGlass, Plus, SlidersHorizontal, TrendDown, TrendUp, Trash, X } from '@phosphor-icons/react';
 import { PluggyConnect, type ConnectEventPayload } from 'react-pluggy-connect';
 
-type ApiTransaction = { id: string; member: string; date: string; description: string; status: string; category: string; account: string; invoice: string; amount: number; kind: 'income' | 'expense' };
-type Account = { id: string; name: string; type: string; balance: number; currency_code: string; last_synced_at: string | null };
+type ApiTransaction = { id: string; member: string; date: string; description: string; status: string; category: string; account: string; invoice: string; amount: number; kind: 'income' | 'expense'; source?: string };
+type Account = { id: string; name: string; type: string; balance: number; currency_code: string; last_synced_at: string | null; external_account_id?: string | null };
 type DashboardCategory = { name: string; amount: number; percent: number };
 type DashboardChart = { month: string; income: number; expenses: number };
-type BankCard = { id: string; name: string; brand: string | null; last_four: string | null; credit_limit: number; available_limit: number };
+type BankCard = { id: string; name: string; brand: string | null; last_four: string | null; credit_limit: number; available_limit: number; source?: string };
 type BankConnection = { id: string; status: string; institution_name: string | null; institution_logo_url: string | null; last_successful_sync_at: string | null; last_error: string | null };
 type DashboardData = { balance: number; income: number; expenses: number; transactions: ApiTransaction[]; accounts: Account[]; categories: DashboardCategory[]; chart: DashboardChart[]; cards: BankCard[]; connections: BankConnection[] };
 type NewTransaction = { description: string; amount: number; date: string; category: string; kind: 'income' | 'expense'; accountId?: string; cardId?: string; account: string };
@@ -68,6 +68,18 @@ function ManageAccountsModal({ accounts, onClose, onDelete }: { accounts: Accoun
   return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Contas manuais</h2><p>Apague somente contas criadas por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{accounts.length ? accounts.map(account => <div className="account-manage-row" key={account.id}><span><strong>{account.name}</strong><small>{money(account.balance)}</small></span><button className="danger-button" type="button" onClick={() => void remove(account)}>Apagar</button></div>) : <p className="empty-copy">Nenhuma conta manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
 }
 
+function ManageCardsModal({ cards, onClose, onDelete }: { cards: BankCard[]; onClose: () => void; onDelete: (id: string) => Promise<void> }) {
+  const [error, setError] = useState('');
+  async function remove(card: BankCard) { if (!window.confirm(`Apagar o cartão ${card.name}? O extrato será preservado.`)) return; try { await onDelete(card.id); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível apagar o cartão.'); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Cartões manuais</h2><p>Apague somente cartões criados por você.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{cards.length ? cards.map(card => <div className="account-manage-row" key={card.id}><span><strong>{card.name}</strong><small>Disponível: {money(card.available_limit)}</small></span><button className="danger-button" type="button" onClick={() => void remove(card)}>Apagar</button></div>) : <p className="empty-copy">Nenhum cartão manual.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
+}
+
+function ManageExpensesModal({ expenses, onClose, onDelete }: { expenses: ApiTransaction[]; onClose: () => void; onDelete: (id: string) => Promise<void> }) {
+  const [error, setError] = useState('');
+  async function remove(expense: ApiTransaction) { if (!window.confirm(`Apagar a despesa “${expense.description}”? O saldo da conta e o limite do cartão serão restaurados.`)) return; try { await onDelete(expense.id); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível apagar a despesa.'); } }
+  return <div className="transaction-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="transaction-modal profile-settings" onMouseDown={event => event.stopPropagation()}><div className="modal-header"><div><h2>Despesas manuais</h2><p>Ao apagar, o saldo e o limite usado são estornados.</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="Fechar"><X /></button></div>{expenses.length ? expenses.map(expense => <div className="account-manage-row" key={expense.id}><span><strong>{expense.description}</strong><small>{new Date(`${expense.date}T00:00:00`).toLocaleDateString('pt-BR')} · {money(expense.amount)}</small></span><button className="danger-button" type="button" onClick={() => void remove(expense)}><Trash /> Apagar</button></div>) : <p className="empty-copy">Nenhuma despesa manual neste mês.</p>}{error && <p className="modal-error">{error}</p>}</section></div>;
+}
+
 function PrivacyConsentModal({ onClose, onAccept }: { onClose: () => void; onAccept: () => Promise<void> }) {
   const [accepted, setAccepted] = useState(false); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
   async function submit() { setSaving(true); setError(''); try { await onAccept(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Não foi possível registrar o consentimento.'); } finally { setSaving(false); } }
@@ -107,6 +119,8 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
   const [newAccountOpen, setNewAccountOpen] = useState(false);
   const [newCardOpen, setNewCardOpen] = useState(false);
   const [manageAccountsOpen, setManageAccountsOpen] = useState(false);
+  const [manageCardsOpen, setManageCardsOpen] = useState(false);
+  const [manageExpensesOpen, setManageExpensesOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData>();
   const [importingStatement, setImportingStatement] = useState(false);
@@ -236,6 +250,18 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     await loadDashboard();
   }
 
+  async function deleteManualCard(cardId: string) {
+    const response = await apiFetch(`/api/cards/${cardId}`, { method: 'DELETE' });
+    if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? 'Não foi possível apagar o cartão.'); }
+    await loadDashboard();
+  }
+
+  async function deleteManualExpense(transactionId: string) {
+    const response = await apiFetch(`/api/transactions/${transactionId}`, { method: 'DELETE' });
+    if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error ?? 'Não foi possível apagar a despesa.'); }
+    await loadDashboard();
+  }
+
   async function importStatementPdf(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; event.target.value = '';
     if (!file) return;
@@ -265,10 +291,12 @@ export default function App({ accessToken, onSignOut }: { accessToken: string; o
     {newTransactionOpen && <TransactionModal accounts={financialData?.accounts ?? []} cards={financialData?.cards ?? []} onClose={() => setNewTransactionOpen(false)} onSave={createTransaction} />}
     {newAccountOpen && <AccountModal onClose={() => setNewAccountOpen(false)} onSave={createManualAccount} />}
     {newCardOpen && <CardModal onClose={() => setNewCardOpen(false)} onSave={createManualCard} />}
-    {manageAccountsOpen && <ManageAccountsModal accounts={financialData?.accounts?.filter(account => !account.last_synced_at) ?? []} onClose={() => setManageAccountsOpen(false)} onDelete={deleteManualAccount} />}
+    {manageAccountsOpen && <ManageAccountsModal accounts={financialData?.accounts?.filter(account => !account.external_account_id) ?? []} onClose={() => setManageAccountsOpen(false)} onDelete={deleteManualAccount} />}
+    {manageCardsOpen && <ManageCardsModal cards={financialData?.cards?.filter(card => card.source === 'manual') ?? []} onClose={() => setManageCardsOpen(false)} onDelete={deleteManualCard} />}
+    {manageExpensesOpen && <ManageExpensesModal expenses={financialData?.transactions?.filter(transaction => transaction.source === 'manual' && transaction.kind === 'expense') ?? []} onClose={() => setManageExpensesOpen(false)} onDelete={deleteManualExpense} />}
     {privacyOpen && <PrivacyConsentModal onClose={() => setPrivacyOpen(false)} onAccept={acceptPrivacyConsent} />}
     {profileOpen && <ProfileSettingsModal profile={profile} connections={financialData?.connections ?? []} openFinanceConsent={openFinanceConsent} onClose={() => setProfileOpen(false)} onSave={updateProfile} onSignOut={onSignOut} onExport={exportPersonalData} onDeleteRequest={requestDataDeletion} onRevokeConsent={revokeOpenFinanceConsent} onToggleOpenFinance={toggleOpenFinanceMode} />}
-    {profile?.open_finance_paused && <div className="manual-actions"><button className="manual-card-fab" onClick={() => setNewCardOpen(true)}><CreditCard /> Adicionar cartão</button><button className="manual-account-fab" onClick={() => setManageAccountsOpen(true)}>Gerenciar contas</button></div>}
+    {profile?.open_finance_paused && <div className="manual-actions"><button className="manual-card-fab" onClick={() => setNewCardOpen(true)}><CreditCard /> Adicionar cartão</button><button className="manual-account-fab" onClick={() => setManageAccountsOpen(true)}>Gerenciar contas</button><button className="manual-account-fab" onClick={() => setManageCardsOpen(true)}>Gerenciar cartões</button><button className="manual-account-fab" onClick={() => setManageExpensesOpen(true)}>Apagar despesas</button></div>}
 
     <section className="overview"><div><section className="account-carousel" aria-label="Contas">{financialData?.accounts?.map(account => <article className="account-card" key={account.id}><span>{account.type === 'credit' ? 'CR' : 'CC'}</span><p>{account.name}</p><strong>{money(account.balance)}</strong><small>{account.last_synced_at ? `Atualizado ${new Date(account.last_synced_at).toLocaleDateString('pt-BR')}` : 'Conta manual'}</small></article>)}<button className="account-card add-account" onClick={() => setNewAccountOpen(true)}><Plus /><strong>Adicionar conta</strong><small>Manual ou Open Finance</small></button></section><section className="summary-grid"><article className="summary balance"><p>Saldo Total</p><strong>{money(financialData?.balance ?? 0)}</strong><small><TrendUp /> {financialData?.connections?.length ? `${financialData.connections.length} banco(s) conectado(s)` : 'Conecte seu banco'}</small></article><article className="summary"><p>Receitas <i><ArrowDownLeft /></i></p><strong>{money(financialData?.income ?? 0)}</strong><small><TrendUp /> Movimentações sincronizadas</small></article><article className="summary"><p>Despesas <i className="danger"><ArrowUpRight /></i></p><strong>{money(financialData?.expenses ?? 0)}</strong><small><TrendDown /> Movimentações sincronizadas</small></article></section></div><aside className="cards-panel"><h2><CreditCard /> Cartões</h2><div className="card-stack">{financialData?.cards?.length ? financialData.cards.map(card => <article className="inter" key={card.id}><span>{card.brand?.slice(0, 2).toUpperCase() ?? 'CC'}</span><b>{money(card.available_limit)}</b><small>{card.name}{card.last_four ? ` • ${card.last_four}` : ''}</small><strong>{money(card.credit_limit)}</strong></article>) : <p className="empty-copy">Nenhum cartão de crédito sincronizado.</p>}</div></aside></section>
 

@@ -470,7 +470,8 @@ app.get('/api/dashboard', async (request, response) => {
   const expenses = cycleTransactions.filter((transaction) => transaction.kind === 'expense').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
   const balance = manualProfile?.open_finance_paused ? (accounts ?? []).filter(account => !account.external_account_id).reduce((sum, account) => sum + Number(account.balance), 0) : (accounts ?? []).reduce((sum, account) => sum + Number(account.balance), 0);
   const paidFromAccounts = cycleTransactions.filter(transaction => transaction.kind === 'expense' && transaction.account_id).reduce((sum, transaction) => sum + Number(transaction.amount), 0);
-  const income = manualProfile?.open_finance_paused ? Math.max(0, balance - Number(manualProfile.manual_cycle_opening_balance ?? balance) + paidFromAccounts) : recordedIncome;
+  const incomeWithoutAccount = cycleTransactions.filter(transaction => transaction.kind === 'income' && !transaction.account_id).reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+  const income = manualProfile?.open_finance_paused ? Math.max(0, balance - Number(manualProfile.manual_cycle_opening_balance ?? balance) + paidFromAccounts + incomeWithoutAccount) : recordedIncome;
   const categoryTotals = new Map<string, number>();
   const monthly = new Map<string, { income: number; expenses: number }>();
   for (const transaction of cycleTransactions) {

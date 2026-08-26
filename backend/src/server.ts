@@ -386,6 +386,12 @@ app.post('/api/imports/statement-pdf', statementUpload.single('statement'), asyn
   }
 });
 
+app.delete('/api/imports/statement-pdf', async (request, response) => {
+  const { count, error } = await supabase.from('transactions').delete({ count: 'exact' }).eq('profile_id', appProfileId(request)).eq('member', 'Extrato PDF').eq('source', 'manual');
+  if (error) return response.status(500).json({ error: error.message });
+  response.json({ deleted: count ?? 0 });
+});
+
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {
   const { member, date, description, status, category, account, accountId, cardId, invoice, amount, kind } = request.body;
   if (!member || !date || !description || !status || !category || !account || !invoice || typeof amount !== 'number' || !Number.isFinite(amount) || (kind !== 'income' && kind !== 'expense')) {

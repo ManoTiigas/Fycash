@@ -7,6 +7,7 @@ import multer from 'multer';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
 import { requireAuth } from './auth.js';
 import { createConnectToken, syncPluggyItem } from './pluggy.js';
+import { parseStatementPdf as parseStructuredStatement } from './statement-parser.js';
 import { supabase } from './supabase.js';
 
 type TransactionKind = 'income' | 'expense';
@@ -347,12 +348,26 @@ app.get('/api/transactions', async (request, response) => {
   response.json(data);
 });
 
+app.post('/api/imports/statement-pdf/preview', statementUpload.single('statement'), async (request, response) => {
+  const file = request.file;
+  if (!file || file.mimetype !== 'application/pdf' || !file.buffer.subarray(0, 4).equals(Buffer.from('%PDF'))) return response.status(400).json({ error: 'Envie um arquivo PDF válido de até 8 MB.' });
+  try {
+    const parsed = await pdf(file.buffer);
+    const statement = parseStructuredStatement(parsed.text);
+    if (!statement.transactions.length) return response.status(422).json({ error: 'Não encontramos transações legíveis. Use um extrato PDF com datas e valores.' });
+    response.json({ provider: statement.provider, transactions: statement.transactions.slice(0, 500) });
+  } catch (error) {
+    response.status(422).json({ error: error instanceof Error ? `Não foi possível ler o PDF: ${error.message}` : 'Não foi possível ler o PDF.' });
+  }
+});
+
 app.post('/api/imports/statement-pdf', statementUpload.single('statement'), async (request, response) => {
   const file = request.file;
   if (!file || file.mimetype !== 'application/pdf' || !file.buffer.subarray(0, 4).equals(Buffer.from('%PDF'))) return response.status(400).json({ error: 'Envie um arquivo PDF válido de até 8 MB.' });
   try {
     const parsed = await pdf(file.buffer);
-    const transactions = parseStatementPdf(parsed.text).slice(0, 500);
+    const statement = parseStructuredStatement(parsed.text);
+    const transactions = statement.transactions.slice(0, 500);
     if (!transactions.length) return response.status(422).json({ error: 'Não encontramos transações legíveis. Use um extrato PDF com datas e valores.' });
     const profileId = appProfileId(request);
     const dates = transactions.map(item => item.date).sort();
@@ -363,7 +378,7 @@ app.post('/api/imports/statement-pdf', statementUpload.single('statement'), asyn
     if (!unique.length) return response.json({ imported: 0, skipped: transactions.length, message: 'Este extrato já foi importado.' });
     const { error } = await supabase.from('transactions').insert(unique.map(item => ({ profile_id: profileId, member: 'Extrato PDF', date: item.date, description: item.description, status: item.kind === 'income' ? 'Recebido' : 'Enviado', category: 'Importado', account: 'Extrato PDF', invoice: item.kind === 'income' ? 'Receita' : 'Paga', amount: item.amount, kind: item.kind })));
     if (error) return response.status(500).json({ error: error.message });
-    response.status(201).json({ imported: unique.length, skipped: transactions.length - unique.length, message: 'Extrato importado com sucesso.' });
+    response.status(201).json({ provider: statement.provider, imported: unique.length, skipped: transactions.length - unique.length, transactions: unique, message: 'Extrato importado com sucesso.' });
   } catch (error) {
     response.status(422).json({ error: error instanceof Error ? `Não foi possível ler o PDF: ${error.message}` : 'Não foi possível ler o PDF.' });
   }

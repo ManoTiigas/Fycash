@@ -59,10 +59,11 @@ function parseGeneric(text: string): StatementTransaction[] {
     const line = rawLine.replace(/\s+/g, ' ').trim();
     const date = line.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
     const amounts = [...line.matchAll(/-?\s?R?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}/g)];
-    const amountText = amounts.at(-1)?.[0];
+    const lastAmount = amounts[amounts.length - 1];
+    const amountText = lastAmount?.[0];
     if (!date || !amountText) continue;
     const amount = normalizeAmount(amountText);
-    const description = line.slice((date.index ?? 0) + date[0].length, amounts.at(-1)?.index).trim();
+    const description = line.slice((date.index ?? 0) + date[0].length, lastAmount?.index).trim();
     if (!description || !Number.isFinite(amount) || amount === 0 || /^(saldo|total|limite)/i.test(description)) continue;
     transactions.push({ date: `${date[3]}-${date[2]}-${date[1]}`, description: description.slice(0, 200), amount: Math.abs(amount), kind: amount < 0 || /\b(d[eé]bito|pagamento|compra|sa[ií]da)\b/i.test(line) ? 'expense' : 'income', provider: 'generic' });
   }

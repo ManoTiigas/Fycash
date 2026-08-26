@@ -102,7 +102,7 @@ function parseStatementPdf(text: string): ImportedTransaction[] {
     const line = rawLine.replace(/\s+/g, ' ').trim();
     const date = line.match(/\b(\d{2})\/(\d{2})\/(\d{4})\b/);
     const amountMatches = [...line.matchAll(/-?\s?R?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}/g)];
-    const amountMatch = amountMatches.at(-1);
+    const amountMatch = amountMatches[amountMatches.length - 1];
     if (!date || !amountMatch) continue;
     const amount = normalizeAmount(amountMatch[0]);
     if (!Number.isFinite(amount) || amount === 0) continue;
@@ -371,7 +371,7 @@ app.post('/api/imports/statement-pdf', statementUpload.single('statement'), asyn
     if (!transactions.length) return response.status(422).json({ error: 'Não encontramos transações legíveis. Use um extrato PDF com datas e valores.' });
     const profileId = appProfileId(request);
     const dates = transactions.map(item => item.date).sort();
-    const { data: existing, error: existingError } = await supabase.from('transactions').select('date, description, amount, kind').eq('profile_id', profileId).gte('date', dates[0]).lte('date', dates.at(-1)!);
+    const { data: existing, error: existingError } = await supabase.from('transactions').select('date, description, amount, kind').eq('profile_id', profileId).gte('date', dates[0]).lte('date', dates[dates.length - 1]!);
     if (existingError) return response.status(500).json({ error: existingError.message });
     const signatures = new Set((existing ?? []).map(item => `${item.date}|${item.description.toLowerCase()}|${Number(item.amount)}|${item.kind}`));
     const unique = transactions.filter(item => !signatures.has(`${item.date}|${item.description.toLowerCase()}|${item.amount}|${item.kind}`));

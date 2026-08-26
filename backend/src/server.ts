@@ -376,9 +376,11 @@ app.post('/api/imports/statement-pdf', statementUpload.single('statement'), asyn
     const signatures = new Set((existing ?? []).map(item => `${item.date}|${item.description.toLowerCase()}|${Number(item.amount)}|${item.kind}`));
     const unique = transactions.filter(item => !signatures.has(`${item.date}|${item.description.toLowerCase()}|${item.amount}|${item.kind}`));
     if (!unique.length) return response.json({ imported: 0, skipped: transactions.length, message: 'Este extrato já foi importado.' });
-    const { error } = await supabase.from('transactions').insert(unique.map(item => ({ profile_id: profileId, member: 'Extrato PDF', date: item.date, description: item.description, status: item.kind === 'income' ? 'Recebido' : 'Enviado', category: 'Importado', account: 'Extrato PDF', invoice: item.kind === 'income' ? 'Receita' : 'Paga', amount: item.amount, kind: item.kind })));
+    const accountName = statement.provider === 'nubank' ? 'Nubank (PDF)' : statement.provider === 'mercado_pago' ? 'Mercado Pago (PDF)' : 'Extrato PDF';
+    const { error } = await supabase.from('transactions').insert(unique.map(item => ({ profile_id: profileId, source: 'manual', member: 'Extrato PDF', date: item.date, description: item.description, status: item.kind === 'income' ? 'Recebido' : 'Enviado', category: item.kind === 'income' ? 'Receitas' : 'Despesas', account: accountName, invoice: item.kind === 'income' ? 'Receita' : 'Paga', amount: item.amount, kind: item.kind })));
     if (error) return response.status(500).json({ error: error.message });
-    response.status(201).json({ provider: statement.provider, imported: unique.length, skipped: transactions.length - unique.length, transactions: unique, message: 'Extrato importado com sucesso.' });
+    const incomeImported = unique.filter(item => item.kind === 'income').reduce((sum, item) => sum + item.amount, 0);
+    response.status(201).json({ provider: statement.provider, imported: unique.length, skipped: transactions.length - unique.length, incomeImported, transactions: unique, message: 'Extrato importado com sucesso.' });
   } catch (error) {
     response.status(422).json({ error: error instanceof Error ? `Não foi possível ler o PDF: ${error.message}` : 'Não foi possível ler o PDF.' });
   }

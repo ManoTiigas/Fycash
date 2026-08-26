@@ -7,6 +7,7 @@ type PluggyAccount = { id: string; name?: string; marketingName?: string; type?:
 type PluggyTransaction = { id: string; date: string; description?: string; amount: number; type?: string; category?: string | { name?: string } };
 type PluggyItem = { id: string; clientUserId?: string; connector?: { name?: string; imageUrl?: string } };
 type SyncTrigger = 'connect' | 'manual' | 'webhook';
+type StoredCard = { id: string; external_account_id: string | null; name: string; brand: string | null; last_four: string | null };
 
 function config() {
   const clientId = process.env.PLUGGY_CLIENT_ID;
@@ -44,6 +45,18 @@ export async function createConnectToken(profileId: string) {
 const accountType = (type?: string) => type?.toLowerCase() === 'credit' ? 'credit' : type?.toLowerCase() === 'savings' ? 'savings' : type?.toLowerCase() === 'investment' ? 'investment' : 'checking';
 const transactionKind = (transaction: PluggyTransaction) => transaction.type?.toUpperCase() === 'CREDIT' ? 'income' : transaction.type?.toUpperCase() === 'DEBIT' ? 'expense' : transaction.amount < 0 ? 'expense' : 'income';
 const categoryName = (category: PluggyTransaction['category']) => typeof category === 'string' ? category : category?.name ?? 'Sem categoria';
+const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function cardInvoicePayment(transaction: PluggyTransaction, cards: StoredCard[]) {
+  if (transactionKind(transaction) !== 'expense') return undefined;
+  const description = normalize(`${transaction.description ?? ''} ${categoryName(transaction.category)}`);
+  if (!/(pagamento|paga|quitacao|quitada).*(fatura|cartao)|(fatura|cartao).*(pagamento|paga|quitacao|quitada)/.test(description)) return undefined;
+  const matches = cards.filter((card) => {
+    const name = normalize(card.name); const brand = normalize(card.brand ?? ''); const lastFour = card.last_four?.trim();
+    return (name.length > 2 && description.includes(name)) || (brand.length > 2 && description.includes(brand)) || Boolean(lastFour && new RegExp(`\\b${lastFour}\\b`).test(description));
+  });
+  return matches.length === 1 ? matches[0] : cards.length === 1 ? cards[0] : undefined;
+}
 
 async function transactionsForAccount(accountId: string) {
   const transactions: PluggyTransaction[] = [];
@@ -78,17 +91,24 @@ export async function syncPluggyItem(itemId: string, profileId: string, trigger:
       const stored = await supabase.from('accounts').upsert(mappedAccounts, { onConflict: 'external_account_id' }).select('id, external_account_id, name, type');
       if (stored.error) throw stored.error;
       const remoteById = new Map(remoteAccounts.map(account => [account.id, account]));
-      for (const account of stored.data) {
+      const cardsByAccount = new Map<string, StoredCard>();
+      for (const account of stored.data.filter((candidate) => candidate.type === 'credit')) {
         const remoteAccount = remoteById.get(account.external_account_id);
-        if (account.type === 'credit') {
-          const credit = remoteAccount?.creditData;
-          const card = await supabase.from('cards').upsert({ profile_id: profileId, account_id: account.id, external_account_id: account.external_account_id, source: 'pluggy', name: account.name, brand: credit?.brand ?? null, last_four: credit?.number?.slice(-4) ?? null, credit_limit: Number(credit?.creditLimit ?? 0), available_limit: Number(credit?.availableCreditLimit ?? 0), last_synced_at: new Date().toISOString() }, { onConflict: 'external_account_id' });
-          if (card.error) throw card.error;
-        }
+        const credit = remoteAccount?.creditData;
+        const card = await supabase.from('cards').upsert({ profile_id: profileId, account_id: account.id, external_account_id: account.external_account_id, source: 'pluggy', name: account.name, brand: credit?.brand ?? null, last_four: credit?.number?.slice(-4) ?? null, credit_limit: Number(credit?.creditLimit ?? 0), available_limit: Number(credit?.availableCreditLimit ?? 0), last_synced_at: new Date().toISOString() }, { onConflict: 'external_account_id' }).select('id, external_account_id, name, brand, last_four').single();
+        if (card.error) throw card.error;
+        cardsByAccount.set(account.external_account_id, card.data);
+      }
+      const connectedCards = [...cardsByAccount.values()];
+      for (const account of stored.data) {
         const remoteTransactions = await transactionsForAccount(account.external_account_id);
         const mappedTransactions = remoteTransactions.map((transaction) => {
           const kind = transactionKind(transaction);
-          return { profile_id: profileId, account_id: account.id, external_transaction_id: transaction.id, source: 'pluggy', member: item.connector?.name ?? 'Banco', date: transaction.date.slice(0, 10), description: transaction.description || 'Transação bancária', status: kind === 'income' ? 'Recebido' : 'Enviado', category: categoryName(transaction.category), account: account.name, invoice: kind === 'income' ? 'Receita' : 'Paga', amount: Math.abs(Number(transaction.amount)), kind };
+          const cardFromTransaction = cardsByAccount.get(account.external_account_id);
+          const paidCard = account.type === 'credit' ? undefined : cardInvoicePayment(transaction, connectedCards);
+          const card = cardFromTransaction ?? paidCard;
+          const isInvoicePayment = Boolean(paidCard);
+          return { profile_id: profileId, account_id: account.id, card_id: card?.id ?? null, external_transaction_id: transaction.id, source: 'pluggy', member: item.connector?.name ?? 'Banco', date: transaction.date.slice(0, 10), description: transaction.description || 'Transação bancária', status: kind === 'income' ? 'Recebido' : 'Enviado', category: isInvoicePayment ? 'Pagamento de fatura' : categoryName(transaction.category), account: account.name, invoice: kind === 'income' ? 'Receita' : isInvoicePayment ? 'Fatura paga' : 'Paga', amount: Math.abs(Number(transaction.amount)), kind };
         });
         if (mappedTransactions.length) {
           const transactionResult = await supabase.from('transactions').upsert(mappedTransactions, { onConflict: 'external_transaction_id' }).select('id');

@@ -21,10 +21,11 @@ async function apiKey() {
   const { clientId, clientSecret } = config();
   const response = await fetch(`${baseUrl}/auth`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId, clientSecret }) });
   if (!response.ok) throw new Error(`Falha na autenticação Pluggy (${response.status}).`);
-  const data = await response.json() as { accessToken?: string };
-  if (!data.accessToken) throw new Error('A Pluggy não retornou uma chave de acesso.');
-  cachedApiKey = { value: data.accessToken, expiresAt: Date.now() + 105 * 60_000 };
-  return data.accessToken;
+  const data = await response.json() as { accessToken?: string; apiKey?: string };
+  const value = data.apiKey ?? data.accessToken;
+  if (!value) throw new Error('A Pluggy não retornou uma chave de acesso.');
+  cachedApiKey = { value, expiresAt: Date.now() + 105 * 60_000 };
+  return value;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

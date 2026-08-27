@@ -635,7 +635,7 @@ app.get('/api/dashboard', async (request, response) => {
   transactions = transactions ?? [];
   const profileId = appProfileId(request);
   const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }, { data: profile, error: profileError }] = await Promise.all([
-    supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at, external_account_id').eq('profile_id', profileId).order('name'),
+    supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at, external_account_id, connection_id').eq('profile_id', profileId).order('name'),
     supabase.from('cards').select('id, name, brand, last_four, credit_limit, available_limit, last_synced_at, source').eq('profile_id', profileId).order('name'),
     supabase.from('open_finance_connections').select('id, status, institution_name, institution_logo_url, last_successful_sync_at, last_error').eq('profile_id', profileId).is('disconnected_at', null).order('created_at', { ascending: false }),
     supabase.from('profiles').select('open_finance_paused, open_finance_paused_at, manual_cycle_month, manual_cycle_opening_balance').eq('id', profileId).single()

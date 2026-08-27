@@ -467,6 +467,28 @@ app.delete('/api/manual/goals/:goalId', async (request, response) => {
   response.sendStatus(204);
 });
 
+app.get('/api/category-budgets', async (request, response) => {
+  const { data, error } = await supabase.from('category_budgets').select('id, category, monthly_limit').eq('profile_id', appProfileId(request)).order('category');
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
+});
+
+app.post('/api/category-budgets', async (request, response) => {
+  const profileId = appProfileId(request);
+  const category = typeof request.body.category === 'string' ? request.body.category.trim() : '';
+  const monthlyLimit = Number(request.body.monthlyLimit);
+  if (!category || category.length > 80 || !Number.isFinite(monthlyLimit) || monthlyLimit <= 0) return response.status(400).json({ error: 'Informe uma categoria e um limite mensal válidos.' });
+  const { data, error } = await supabase.from('category_budgets').upsert({ profile_id: profileId, category, monthly_limit: monthlyLimit, updated_at: new Date().toISOString() }, { onConflict: 'profile_id,category' }).select('id, category, monthly_limit').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(201).json(data);
+});
+
+app.delete('/api/category-budgets/:budgetId', async (request, response) => {
+  const { error } = await supabase.from('category_budgets').delete().eq('id', request.params.budgetId).eq('profile_id', appProfileId(request));
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
 app.post('/api/open-finance/pluggy/webhook', async (request, response) => {
   const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
   if (!webhookSecret || request.query.token !== webhookSecret) return response.sendStatus(401);
@@ -654,7 +676,17 @@ app.get('/api/dashboard', async (request, response) => {
     value.income = income;
     monthly.set(currentMonth(), value);
   }
-  const categories = [...categoryTotals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, amount]) => ({ name, amount, percent: expenses ? Math.round(amount / expenses * 100) : 0 }));
+  const { data: categoryBudgets, error: categoryBudgetsError } = await supabase.from('category_budgets').select('id, category, monthly_limit').eq('profile_id', profileId).order('category');
+  if (categoryBudgetsError) return response.status(500).json({ error: categoryBudgetsError.message });
+  const budgetByCategory = new Map((categoryBudgets ?? []).map(budget => [budget.category, budget]));
+  const categoryNames = [...new Set([...(categoryBudgets ?? []).map(budget => budget.category), ...[...categoryTotals].sort((a, b) => b[1] - a[1]).map(([name]) => name)])];
+  const categories = categoryNames.map(name => {
+    const amount = categoryTotals.get(name) ?? 0;
+    const budget = budgetByCategory.get(name);
+    const limit = budget ? Number(budget.monthly_limit) : null;
+    const percent = limit ? Math.round(amount / limit * 100) : expenses ? Math.round(amount / expenses * 100) : 0;
+    return { id: budget?.id ?? null, name, amount, limit, percent, over_limit: Boolean(limit && amount > limit) };
+  });
   const chart = [...monthly].sort(([a], [b]) => a.localeCompare(b)).slice(-7).map(([month, value]) => ({ month, ...value }));
   const { data: storedGoals, error: goalsError } = manualProfile?.open_finance_paused
     ? await supabase.from('monthly_goals').select('id, name, type, target_amount, month').eq('profile_id', profileId).eq('month', currentMonth()).order('created_at')

@@ -19,7 +19,7 @@ interface Transaction {
   status: 'Recebido' | 'Enviado';
   category: string;
   account: string;
-  invoice: 'Receita' | 'Paga';
+  invoice: 'Receita' | 'Paga' | 'Fatura paga';
   amount: number;
   kind: TransactionKind;
   accountId?: string;
@@ -63,6 +63,57 @@ const currentMonth = () => {
   return `${value('year')}-${value('month')}`;
 };
 
+const saoPauloDate = () => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+  return { year: Number(value('year')), month: Number(value('month')), day: Number(value('day')) };
+};
+
+const recurringDate = (month: string, dayOfMonth: number) => {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  return `${month}-${String(Math.min(dayOfMonth, lastDay)).padStart(2, '0')}`;
+};
+
+async function applyRecurringIncomes(profileId: string, month = currentMonth()) {
+  const { data: incomes, error } = await supabase.from('recurring_incomes').select('id, name, amount, day_of_month, account_id').eq('profile_id', profileId).eq('active', true);
+  if (error) throw error;
+  const today = saoPauloDate();
+  const todayValue = `${today.year}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}`;
+
+  for (const income of incomes ?? []) {
+    const date = recurringDate(month, income.day_of_month);
+    if (date > todayValue) continue;
+    const { data: occurrence, error: occurrenceError } = await supabase.from('recurring_income_occurrences').upsert({ profile_id: profileId, recurring_income_id: income.id, month }, { onConflict: 'recurring_income_id,month', ignoreDuplicates: true }).select('id').maybeSingle();
+    if (occurrenceError) throw occurrenceError;
+    if (!occurrence) continue;
+
+    let accountName = 'Receita automática';
+    let accountId: string | null = null;
+    let accountBalance: number | null = null;
+    if (income.account_id) {
+      const { data: account, error: accountError } = await supabase.from('accounts').select('id, name, balance, external_account_id').eq('id', income.account_id).eq('profile_id', profileId).maybeSingle();
+      if (accountError) throw accountError;
+      if (account && !account.external_account_id) {
+        accountName = account.name;
+        accountId = account.id;
+        accountBalance = Number(account.balance);
+      }
+    }
+    const { data: transaction, error: transactionError } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId, card_id: null, source: 'manual', member: 'Mensalidade automática', date, description: income.name, status: 'Recebido', category: 'Receitas', account: accountName, invoice: 'Receita', amount: income.amount, kind: 'income' }).select('id').single();
+    if (transactionError) {
+      await supabase.from('recurring_income_occurrences').delete().eq('id', occurrence.id);
+      throw transactionError;
+    }
+    if (accountId && accountBalance !== null) {
+      const { error: balanceError } = await supabase.from('accounts').update({ balance: accountBalance + Number(income.amount) }).eq('id', accountId).eq('profile_id', profileId);
+      if (balanceError) throw balanceError;
+    }
+    const { error: linkError } = await supabase.from('recurring_income_occurrences').update({ transaction_id: transaction.id }).eq('id', occurrence.id);
+    if (linkError) throw linkError;
+  }
+}
+
 async function ensureManualMonth(profileId: string) {
   const { data: profile, error: profileError } = await supabase.from('profiles').select('open_finance_paused, open_finance_paused_at, manual_cycle_month, manual_cycle_opening_balance').eq('id', profileId).single();
   if (profileError) throw profileError;
@@ -83,7 +134,8 @@ async function ensureManualMonth(profileId: string) {
     const { data: previousTransactions, error: transactionsError } = await supabase.from('transactions').select('amount, kind, account_id').eq('profile_id', profileId).eq('source', 'manual').gte('date', `${profile.manual_cycle_month}-01`).lt('date', `${month}-01`);
     if (transactionsError) throw transactionsError;
     const paidFromAccounts = (previousTransactions ?? []).filter(item => item.kind === 'expense' && item.account_id).reduce((sum, item) => sum + Number(item.amount), 0);
-    const income = Math.max(0, balance - opening + paidFromAccounts);
+    const incomeWithoutAccount = (previousTransactions ?? []).filter(item => item.kind === 'income' && !item.account_id).reduce((sum, item) => sum + Number(item.amount), 0);
+    const income = Math.max(0, balance - opening + paidFromAccounts + incomeWithoutAccount);
     const expenses = (previousTransactions ?? []).filter(item => item.kind === 'expense').reduce((sum, item) => sum + Number(item.amount), 0);
     const { error: closeError } = await supabase.from('manual_month_closings').upsert({ profile_id: profileId, month: profile.manual_cycle_month, opening_balance: opening, closing_balance: balance, income, expenses }, { onConflict: 'profile_id,month' });
     if (closeError) throw closeError;
@@ -311,6 +363,110 @@ app.delete('/api/cards/:cardId', async (request, response) => {
   response.sendStatus(204);
 });
 
+async function requireManualMode(profileId: string) {
+  const { data, error } = await supabase.from('profiles').select('open_finance_paused').eq('id', profileId).single();
+  if (error) throw error;
+  if (!data.open_finance_paused) throw new Error('Ative o modo manual para usar este recurso.');
+}
+
+async function manualAccountForProfile(profileId: string, accountId: unknown) {
+  if (accountId === undefined || accountId === null || accountId === '') return null;
+  if (typeof accountId !== 'string') throw new Error('Conta inválida.');
+  const { data, error } = await supabase.from('accounts').select('id').eq('id', accountId).eq('profile_id', profileId).is('external_account_id', null).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Selecione uma conta manual válida.');
+  return data.id;
+}
+
+app.get('/api/manual/recurring-incomes', async (request, response) => {
+  const profileId = appProfileId(request);
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { data, error } = await supabase.from('recurring_incomes').select('id, name, amount, day_of_month, account_id, active').eq('profile_id', profileId).order('created_at');
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
+});
+
+app.post('/api/manual/recurring-incomes', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const amount = Number(request.body.amount);
+  const dayOfMonth = Number(request.body.dayOfMonth);
+  if (!name || name.length > 80 || !Number.isFinite(amount) || amount <= 0 || !Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return response.status(400).json({ error: 'Informe nome, valor e dia de recebimento válidos.' });
+  try {
+    await requireManualMode(profileId);
+    const accountId = await manualAccountForProfile(profileId, request.body.accountId);
+    const { data, error } = await supabase.from('recurring_incomes').insert({ profile_id: profileId, name, amount, day_of_month: dayOfMonth, account_id: accountId }).select('id, name, amount, day_of_month, account_id, active').single();
+    if (error) return response.status(500).json({ error: error.message });
+    await applyRecurringIncomes(profileId);
+    response.status(201).json(data);
+  } catch (error) { response.status(409).json({ error: error instanceof Error ? error.message : 'Não foi possível criar a mensalidade.' }); }
+});
+
+app.patch('/api/manual/recurring-incomes/:incomeId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const amount = Number(request.body.amount);
+  const dayOfMonth = Number(request.body.dayOfMonth);
+  if (!name || name.length > 80 || !Number.isFinite(amount) || amount <= 0 || !Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return response.status(400).json({ error: 'Informe nome, valor e dia de recebimento válidos.' });
+  try {
+    await requireManualMode(profileId);
+    const accountId = await manualAccountForProfile(profileId, request.body.accountId);
+    const { data, error } = await supabase.from('recurring_incomes').update({ name, amount, day_of_month: dayOfMonth, account_id: accountId, updated_at: new Date().toISOString() }).eq('id', request.params.incomeId).eq('profile_id', profileId).select('id, name, amount, day_of_month, account_id, active').maybeSingle();
+    if (error) return response.status(500).json({ error: error.message });
+    if (!data) return response.status(404).json({ error: 'Mensalidade não encontrada.' });
+    response.json(data);
+  } catch (error) { response.status(409).json({ error: error instanceof Error ? error.message : 'Não foi possível editar a mensalidade.' }); }
+});
+
+app.delete('/api/manual/recurring-incomes/:incomeId', async (request, response) => {
+  const profileId = appProfileId(request);
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { error } = await supabase.from('recurring_incomes').delete().eq('id', request.params.incomeId).eq('profile_id', profileId);
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
+app.get('/api/manual/goals', async (request, response) => {
+  const profileId = appProfileId(request);
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { data, error } = await supabase.from('monthly_goals').select('id, name, type, target_amount, month').eq('profile_id', profileId).eq('month', currentMonth()).order('created_at');
+  if (error) return response.status(500).json({ error: error.message });
+  response.json(data);
+});
+
+app.post('/api/manual/goals', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const targetAmount = Number(request.body.targetAmount);
+  const type = request.body.type;
+  if (!name || name.length > 100 || !Number.isFinite(targetAmount) || targetAmount <= 0 || !['income', 'savings'].includes(type)) return response.status(400).json({ error: 'Informe uma meta e um valor válidos.' });
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { data, error } = await supabase.from('monthly_goals').insert({ profile_id: profileId, month: currentMonth(), name, type, target_amount: targetAmount }).select('id, name, type, target_amount, month').single();
+  if (error) return response.status(500).json({ error: error.message });
+  response.status(201).json(data);
+});
+
+app.patch('/api/manual/goals/:goalId', async (request, response) => {
+  const profileId = appProfileId(request);
+  const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
+  const targetAmount = Number(request.body.targetAmount);
+  const type = request.body.type;
+  if (!name || name.length > 100 || !Number.isFinite(targetAmount) || targetAmount <= 0 || !['income', 'savings'].includes(type)) return response.status(400).json({ error: 'Informe uma meta e um valor válidos.' });
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { data, error } = await supabase.from('monthly_goals').update({ name, type, target_amount: targetAmount, updated_at: new Date().toISOString() }).eq('id', request.params.goalId).eq('profile_id', profileId).select('id, name, type, target_amount, month').maybeSingle();
+  if (error) return response.status(500).json({ error: error.message });
+  if (!data) return response.status(404).json({ error: 'Meta não encontrada.' });
+  response.json(data);
+});
+
+app.delete('/api/manual/goals/:goalId', async (request, response) => {
+  const profileId = appProfileId(request);
+  try { await requireManualMode(profileId); } catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : 'Modo manual obrigatório.' }); }
+  const { error } = await supabase.from('monthly_goals').delete().eq('id', request.params.goalId).eq('profile_id', profileId);
+  if (error) return response.status(500).json({ error: error.message });
+  response.sendStatus(204);
+});
+
 app.post('/api/open-finance/pluggy/webhook', async (request, response) => {
   const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
   if (!webhookSecret || request.query.token !== webhookSecret) return response.sendStatus(401);
@@ -452,8 +608,9 @@ app.get('/api/dashboard', async (request, response) => {
   query = query.eq('profile_id', appProfileId(request));
   if (typeof request.query.from === 'string') query = query.gte('date', request.query.from);
   if (typeof request.query.to === 'string') query = query.lte('date', request.query.to);
-  const { data: transactions, error } = await query;
+  let { data: transactions, error } = await query;
   if (error) return response.status(500).json({ error: error.message });
+  transactions = transactions ?? [];
   const profileId = appProfileId(request);
   const [{ data: accounts, error: accountsError }, { data: cards, error: cardsError }, { data: connections, error: connectionsError }, { data: profile, error: profileError }] = await Promise.all([
     supabase.from('accounts').select('id, name, type, balance, currency_code, last_synced_at, external_account_id').eq('profile_id', profileId).order('name'),
@@ -463,7 +620,18 @@ app.get('/api/dashboard', async (request, response) => {
   ]);
   if (accountsError || cardsError || connectionsError || profileError) return response.status(500).json({ error: accountsError?.message ?? cardsError?.message ?? connectionsError?.message ?? profileError?.message });
   let manualProfile = profile;
-  try { if (profile?.open_finance_paused) manualProfile = await ensureManualMonth(profileId); } catch (cycleError) { return response.status(500).json({ error: cycleError instanceof Error ? cycleError.message : 'Não foi possível fechar o mês manual.' }); }
+  try {
+    if (profile?.open_finance_paused) {
+      manualProfile = await ensureManualMonth(profileId);
+      await applyRecurringIncomes(profileId);
+      let refreshQuery = supabase.from('transactions').select('*').order('date', { ascending: false }).eq('profile_id', profileId);
+      if (typeof request.query.from === 'string') refreshQuery = refreshQuery.gte('date', request.query.from);
+      if (typeof request.query.to === 'string') refreshQuery = refreshQuery.lte('date', request.query.to);
+      const refreshed = await refreshQuery;
+      if (refreshed.error) throw refreshed.error;
+      transactions = refreshed.data ?? [];
+    }
+  } catch (cycleError) { return response.status(500).json({ error: cycleError instanceof Error ? cycleError.message : 'Não foi possível preparar o mês manual.' }); }
   const cycleStart = manualProfile?.open_finance_paused ? `${manualProfile.manual_cycle_month ?? currentMonth()}-01` : undefined;
   const cycleTransactions = manualProfile?.open_finance_paused && cycleStart ? transactions.filter(transaction => transaction.source === 'manual' && transaction.date >= cycleStart) : transactions;
   const recordedIncome = cycleTransactions.filter((transaction) => transaction.kind === 'income').reduce((sum, transaction) => sum + Number(transaction.amount), 0);
@@ -488,7 +656,20 @@ app.get('/api/dashboard', async (request, response) => {
   }
   const categories = [...categoryTotals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, amount]) => ({ name, amount, percent: expenses ? Math.round(amount / expenses * 100) : 0 }));
   const chart = [...monthly].sort(([a], [b]) => a.localeCompare(b)).slice(-7).map(([month, value]) => ({ month, ...value }));
-  response.json({ balance, income, expenses, transactions: cycleTransactions, accounts, cards, connections, categories, chart });
+  const { data: storedGoals, error: goalsError } = manualProfile?.open_finance_paused
+    ? await supabase.from('monthly_goals').select('id, name, type, target_amount, month').eq('profile_id', profileId).eq('month', currentMonth()).order('created_at')
+    : { data: [], error: null };
+  if (goalsError) return response.status(500).json({ error: goalsError.message });
+  const { data: recurringIncomes, error: recurringIncomesError } = manualProfile?.open_finance_paused
+    ? await supabase.from('recurring_incomes').select('id, name, amount, day_of_month, account_id, active').eq('profile_id', profileId).order('created_at')
+    : { data: [], error: null };
+  if (recurringIncomesError) return response.status(500).json({ error: recurringIncomesError.message });
+  const goals = (storedGoals ?? []).map(goal => {
+    const progress = goal.type === 'income' ? income : Math.max(0, income - expenses);
+    const targetAmount = Number(goal.target_amount);
+    return { ...goal, target_amount: targetAmount, progress, percent: Math.min(100, Math.round(progress / targetAmount * 100)), achieved: progress >= targetAmount };
+  });
+  response.json({ balance, income, expenses, transactions: cycleTransactions, accounts, cards, connections, categories, chart, goals, recurringIncomes });
 });
 
 if (!process.env.VERCEL) {

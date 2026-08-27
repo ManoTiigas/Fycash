@@ -572,7 +572,8 @@ app.delete('/api/imports/statement-pdf', async (request, response) => {
 
 app.post('/api/transactions', async (request: Request<object, Transaction, Partial<Transaction>>, response: Response) => {
   const { member, date, description, status, category, account, accountId, cardId, invoice, amount, kind } = request.body;
-  if (!member || !date || !description || !status || !category || !account || !invoice || typeof amount !== 'number' || !Number.isFinite(amount) || (kind !== 'income' && kind !== 'expense')) {
+  const normalizedCategory = typeof category === 'string' ? category.trim() : '';
+  if (!member || !date || !description || !status || !normalizedCategory || normalizedCategory.length > 80 || !account || !invoice || typeof amount !== 'number' || !Number.isFinite(amount) || (kind !== 'income' && kind !== 'expense')) {
     response.status(400).json({ error: 'Dados da transação são inválidos.' });
     return;
   }
@@ -589,7 +590,11 @@ app.post('/api/transactions', async (request: Request<object, Transaction, Parti
   }
   let ownedCard: { id: string; available_limit: number } | null = null;
   if (cardId) { const { data, error } = await supabase.from('cards').select('id, available_limit').eq('id', cardId).eq('profile_id', profileId).eq('source', 'manual').maybeSingle(); if (error) return response.status(500).json({ error: error.message }); if (!data || kind !== 'expense' || data.available_limit < amount) return response.status(400).json({ error: 'Cartão inválido ou limite insuficiente.' }); ownedCard = data; }
-  const { data, error } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId ?? null, card_id: cardId ?? null, source: 'manual', member, date, description, status, category, account, invoice, amount, kind }).select().single();
+  if (kind === 'expense') {
+    const { error: categoryError } = await supabase.from('categories').upsert({ profile_id: profileId, name: normalizedCategory, kind: 'expense' }, { onConflict: 'profile_id,name,kind', ignoreDuplicates: true });
+    if (categoryError) return response.status(500).json({ error: categoryError.message });
+  }
+  const { data, error } = await supabase.from('transactions').insert({ profile_id: profileId, account_id: accountId ?? null, card_id: cardId ?? null, source: 'manual', member, date, description, status, category: normalizedCategory, account, invoice, amount, kind }).select().single();
   if (error) return response.status(500).json({ error: error.message });
   if (ownedAccount) { const nextBalance = Number(ownedAccount.balance) + (kind === 'income' ? amount : -amount); await supabase.from('accounts').update({ balance: nextBalance }).eq('id', ownedAccount.id); }
   if (ownedCard) await supabase.from('cards').update({ available_limit: Number(ownedCard.available_limit) - amount }).eq('id', ownedCard.id);
@@ -678,8 +683,10 @@ app.get('/api/dashboard', async (request, response) => {
   }
   const { data: categoryBudgets, error: categoryBudgetsError } = await supabase.from('category_budgets').select('id, category, monthly_limit').eq('profile_id', profileId).order('category');
   if (categoryBudgetsError) return response.status(500).json({ error: categoryBudgetsError.message });
+  const { data: storedExpenseCategories, error: storedExpenseCategoriesError } = await supabase.from('categories').select('name').eq('profile_id', profileId).eq('kind', 'expense').order('name');
+  if (storedExpenseCategoriesError) return response.status(500).json({ error: storedExpenseCategoriesError.message });
   const budgetByCategory = new Map((categoryBudgets ?? []).map(budget => [budget.category, budget]));
-  const categoryNames = [...new Set([...(categoryBudgets ?? []).map(budget => budget.category), ...[...categoryTotals].sort((a, b) => b[1] - a[1]).map(([name]) => name)])];
+  const categoryNames = [...new Set([...(storedExpenseCategories ?? []).map(category => category.name), ...(categoryBudgets ?? []).map(budget => budget.category), ...[...categoryTotals].sort((a, b) => b[1] - a[1]).map(([name]) => name)])];
   const categories = categoryNames.map(name => {
     const amount = categoryTotals.get(name) ?? 0;
     const budget = budgetByCategory.get(name);
